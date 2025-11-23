@@ -1,0 +1,55 @@
+{
+  "applications": [],
+  "tickets": [
+    {
+      "channelId": "1442141655493775360",
+      "userId": "1174072680023064628",
+      "type": "ia",
+      "subject": "test",
+      "createdAt": 1763903765326,
+      "closedAt": 1763903778802
+    }
+  ],
+  "clockSessions": [
+    {
+      "userId": "1174072680023064628",
+      "assignment": "High Command",
+      "clockIn": 1763855853242,
+      "clockOut": 1763855946481
+    },
+    {
+      "userId": "599483830977560576",
+      "assignment": "High Command",
+      "clockIn": 1763855899392,
+      "clockOut": 1763855916084
+    },
+    {
+      "userId": "693498453464055809",
+      "assignment": "Patrol",
+      "clockIn": 1763855903995,
+      "clockOut": 1763855910781
+    },
+    {
+      "userId": "693498453464055809",
+      "assignment": "Patrol",
+      "clockIn": 1763855917830,
+      "clockOut": 1763855934445
+    },
+    {
+      "userId": "1174072680023064628",
+      "assignment": [
+        "High Command"
+      ],
+      "clockIn": 1763865056665,
+      "clockOut": 1763875347573
+    },
+    {
+      "userId": "693498453464055809",
+      "assignment": [
+        "CID"
+      ],
+      "clockIn": 1763865751027,
+      "clockOut": 1763865765093
+    }
+  ]
+}
