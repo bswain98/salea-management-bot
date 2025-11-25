@@ -1,149 +1,161 @@
 // storage.js
+// Simple JSON-based storage for applications, tickets, and duty sessions.
+
 const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.join(__dirname, 'db.json');
 
-function loadDb() {
-  try {
-    if (!fs.existsSync(DB_PATH)) {
-      return { applications: [], tickets: [], sessions: [] };
-    }
-    const raw = fs.readFileSync(DB_PATH, 'utf8');
-    const data = JSON.parse(raw);
-    // sanity defaults
-    return {
-      applications: Array.isArray(data.applications) ? data.applications : [],
-      tickets: Array.isArray(data.tickets) ? data.tickets : [],
-      sessions: Array.isArray(data.sessions) ? data.sessions : []
+function ensureDB() {
+  if (!fs.existsSync(DB_PATH)) {
+    const initial = {
+      applications: [],
+      tickets: [],
+      sessions: []
     };
-  } catch (err) {
-    console.error('Error loading db.json:', err);
+    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
+  }
+}
+
+function readDB() {
+  ensureDB();
+  const raw = fs.readFileSync(DB_PATH, 'utf8');
+  try {
+    return JSON.parse(raw);
+  } catch {
     return { applications: [], tickets: [], sessions: [] };
   }
 }
 
-function saveDb(db) {
-  try {
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Error saving db.json:', err);
-  }
+function writeDB(db) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
 }
 
-// ---------- APPLICATIONS ----------
+// -------------------- Applications --------------------
+
 function addApplication(app) {
-  const db = loadDb();
+  const db = readDB();
   db.applications.push(app);
-  saveDb(db);
+  writeDB(db);
   return app;
 }
 
 function getLatestApplicationForUser(userId) {
-  const db = loadDb();
+  const db = readDB();
   const apps = db.applications.filter(a => a.userId === userId);
   if (apps.length === 0) return null;
-  // latest by createdAt
-  return apps.reduce((latest, app) =>
-    !latest || app.createdAt > latest.createdAt ? app : latest
-  , null);
+  return apps[apps.length - 1];
 }
 
-function updateApplicationStatus(id, status, decidedBy, extra) {
-  const db = loadDb();
-  const app = db.applications.find(a => a.id === id);
-  if (!app) return null;
+function updateApplicationStatus(id, status, decidedBy, reasonOrDivision) {
+  const db = readDB();
+  const idx = db.applications.findIndex(a => a.id === id);
+  if (idx === -1) return null;
 
+  const app = db.applications[idx];
   app.status = status;
   app.decidedAt = Date.now();
   app.decidedBy = decidedBy;
+  app.decisionReason = reasonOrDivision;
+  db.applications[idx] = app;
 
-  if (status === 'approved') {
-    app.division = extra;
-  } else if (status === 'denied') {
-    app.decisionReason = extra;
-  }
-
-  saveDb(db);
+  writeDB(db);
   return app;
 }
 
-// ---------- TICKETS ----------
+// -------------------- Tickets --------------------
+
 function addTicket(ticket) {
-  const db = loadDb();
+  const db = readDB();
   db.tickets.push(ticket);
-  saveDb(db);
+  writeDB(db);
   return ticket;
 }
 
 function closeTicket(channelId) {
-  const db = loadDb();
-  const ticket = db.tickets.find(
-    t => t.channelId === channelId && !t.closedAt
-  );
-  if (!ticket) return null;
+  const db = readDB();
+  const idx = db.tickets.findIndex(t => t.channelId === channelId);
+  if (idx === -1) return null;
+
+  const ticket = db.tickets[idx];
   ticket.closedAt = Date.now();
-  saveDb(db);
+  db.tickets[idx] = ticket;
+  writeDB(db);
   return ticket;
 }
 
-// ---------- DUTY SESSIONS ----------
-// Each session: { id, userId, assignments: [..], clockIn, clockOut }
+// -------------------- Duty Sessions --------------------
 
-function getOpenSession(userId) {
-  const db = loadDb();
-  return db.sessions.find(s => s.userId === userId && !s.clockOut) || null;
-}
+// clockIn: allow single assignment or array of assignments
+function clockIn(userId, assignmentOrAssignments) {
+  const db = readDB();
 
-function getAllOpenSessions() {
-  const db = loadDb();
-  return db.sessions.filter(s => !s.clockOut);
-}
+  const existing = db.sessions.find(s => s.userId === userId && !s.clockOut);
+  if (existing) return null;
 
-function clockIn(userId, assignments) {
-  const db = loadDb();
-  const open = db.sessions.find(s => s.userId === userId && !s.clockOut);
-  if (open) return null;
+  let assignments = [];
+  if (Array.isArray(assignmentOrAssignments)) {
+    assignments = assignmentOrAssignments;
+  } else if (typeof assignmentOrAssignments === 'string') {
+    assignments = [assignmentOrAssignments];
+  }
 
   const session = {
     id: `${userId}-${Date.now()}`,
     userId,
-    assignments: Array.isArray(assignments) ? assignments : [assignments],
+    assignments,
     clockIn: Date.now(),
     clockOut: null
   };
 
   db.sessions.push(session);
-  saveDb(db);
+  writeDB(db);
   return session;
 }
 
 function clockOut(userId) {
-  const db = loadDb();
-  const session = db.sessions.find(s => s.userId === userId && !s.clockOut);
-  if (!session) return null;
-  session.clockOut = Date.now();
-  saveDb(db);
+  const db = readDB();
+  const idx = db.sessions.findIndex(s => s.userId === userId && !s.clockOut);
+  if (idx === -1) return null;
+
+  db.sessions[idx].clockOut = Date.now();
+  const session = db.sessions[idx];
+  writeDB(db);
   return session;
 }
 
-function getSessionsForUserInRange(userId, fromTimestamp) {
-  const db = loadDb();
+function getOpenSession(userId) {
+  const db = readDB();
+  return db.sessions.find(s => s.userId === userId && !s.clockOut) || null;
+}
+
+function getAllOpenSessions() {
+  const db = readDB();
+  return db.sessions.filter(s => !s.clockOut);
+}
+
+function getSessionsForUserInRange(userId, fromMs) {
+  const db = readDB();
   return db.sessions.filter(
     s =>
       s.userId === userId &&
       s.clockOut &&
-      s.clockOut >= fromTimestamp
+      s.clockIn >= fromMs &&
+      s.clockOut >= s.clockIn
   );
 }
 
-function getSessionsInRange(fromTimestamp, assignmentFilter = null) {
-  const db = loadDb();
+// assignmentFilter: null or a specific assignment string (e.g. 'Patrol')
+function getSessionsInRange(fromMs, assignmentFilter = null) {
+  const db = readDB();
   return db.sessions.filter(s => {
-    if (!s.clockOut || s.clockOut < fromTimestamp) return false;
-    if (!assignmentFilter) return true;
-    const arr = Array.isArray(s.assignments) ? s.assignments : [];
-    return arr.includes(assignmentFilter);
+    if (!s.clockOut) return false;
+    if (s.clockIn < fromMs) return false;
+    if (assignmentFilter) {
+      const assignments = Array.isArray(s.assignments) ? s.assignments : [];
+      if (!assignments.includes(assignmentFilter)) return false;
+    }
+    return true;
   });
 }
 

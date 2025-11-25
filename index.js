@@ -1,4 +1,5 @@
 // index.js
+
 const {
   Client,
   GatewayIntentBits,
@@ -36,43 +37,24 @@ const {
   getSessionsInRange
 } = require('./storage');
 
-const rawConfig = require('./config.json');
+const config = require('./config.json');
 
-// ---------- ENV SECRETS ----------
+// --------- Env vars (tokens & IDs) ---------
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 
-if (!BOT_TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.warn('⚠️ DISCORD_TOKEN, DISCORD_CLIENT_ID, or DISCORD_GUILD_ID not set. (Required in cloud hosting)');
+if (!BOT_TOKEN) {
+  console.error('❌ DISCORD_TOKEN is not set. Set it in Render (or your .env).');
+  process.exit(1);
+}
+if (!CLIENT_ID) {
+  console.error('❌ DISCORD_CLIENT_ID is not set.');
+}
+if (!GUILD_ID) {
+  console.error('❌ DISCORD_GUILD_ID is not set.');
 }
 
-// ---------- ID SANITIZER ----------
-function extractId(value) {
-  if (!value || typeof value !== 'string') return null;
-  const matches = value.match(/\d{15,}/g);
-  if (!matches || matches.length === 0) return null;
-  return matches[matches.length - 1];
-}
-
-const config = {
-  ...rawConfig,
-  roles: {
-    ...rawConfig.roles,
-    onDutyRoleId: extractId(rawConfig.roles?.onDutyRoleId)
-  },
-  channels: {
-    ...rawConfig.channels,
-    clockStatusChannelId: extractId(rawConfig.channels?.clockStatusChannelId)
-  }
-};
-
-console.log('[Config] clockStatusChannelId (raw):', rawConfig.channels?.clockStatusChannelId);
-console.log('[Config] clockStatusChannelId (parsed):', config.channels.clockStatusChannelId);
-console.log('[Config] onDutyRoleId (raw):', rawConfig.roles?.onDutyRoleId);
-console.log('[Config] onDutyRoleId (parsed):', config.roles.onDutyRoleId);
-
-// ---------- DISCORD CLIENT ----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -82,9 +64,13 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
+// In-memory message ID for duty board
 let dutyBoardMessageId = null;
 
-// ---------- UTILS ----------
+// ---------------------------
+// Utility helpers
+// ---------------------------
+
 function msToHuman(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -116,91 +102,66 @@ function hasAnyRole(member, roleIds) {
   return roleIds.some(id => member.roles.cache.has(id));
 }
 
+// ---------------------------
+// Duty board updater
+// ---------------------------
+
 async function updateDutyBoard(guild) {
-  console.log('[DutyBoard] Updating duty board...');
-
   const channelId = config.channels.clockStatusChannelId;
-  console.log('[DutyBoard] Using channelId:', channelId);
-  if (!channelId) {
-    console.log('[DutyBoard] No valid clockStatusChannelId after parsing');
-    return;
-  }
+  if (!channelId) return;
 
-  const channel = await guild.channels.fetch(channelId).catch(err => {
-    console.error('[DutyBoard] Failed to fetch channel:', err);
-    return null;
-  });
-
-  if (!channel) {
-    console.log('[DutyBoard] Channel not found for ID:', channelId);
-    return;
-  }
-
-  if (!channel.isTextBased()) {
-    console.log('[DutyBoard] Channel is not text-based:', channelId);
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    console.warn('[DutyBoard] Channel not found or not text based for ID:', channelId);
     return;
   }
 
   const sessions = getAllOpenSessions();
-  console.log('[DutyBoard] Open sessions count:', sessions ? sessions.length : 'null');
-
   if (!sessions || sessions.length === 0) {
     const content = '📋 **On Duty Board**\nNo one is currently clocked in.';
-    try {
-      if (dutyBoardMessageId) {
-        const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
-        if (msg) {
-          await msg.edit(content);
-          console.log('[DutyBoard] Updated existing empty board message');
-          return;
-        }
+    if (dutyBoardMessageId) {
+      const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
+      if (msg) {
+        await msg.edit(content).catch(() => {});
+        return;
       }
-
-      const newMsg = await channel.send(content);
-      dutyBoardMessageId = newMsg.id;
-      console.log('[DutyBoard] Sent new empty board message, id =', dutyBoardMessageId);
-    } catch (err) {
-      console.error('[DutyBoard] Error sending/updating empty board message:', err);
     }
+    const newMsg = await channel.send(content);
+    dutyBoardMessageId = newMsg.id;
     return;
   }
 
   const lines = sessions.map(s => {
     const assignments = Array.isArray(s.assignments)
       ? s.assignments
-      : s.assignment
-      ? [s.assignment]
       : [];
     const assignmentsText = assignments.length > 0 ? assignments.join(', ') : 'Unspecified';
     const startedUnix = Math.floor(s.clockIn / 1000);
     const elapsed = msToHuman(Date.now() - s.clockIn);
-
     return `• <@${s.userId}> – **${assignmentsText}** – on duty since <t:${startedUnix}:R> (**${elapsed}**)`;
   });
 
-  const content = '📋 **On Duty Board**\n' + lines.join('\n');
+  const header = '📋 **On Duty Board**';
+  const content = `${header}\n${lines.join('\n')}`;
 
-  try {
-    if (dutyBoardMessageId) {
-      const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
-      if (msg) {
-        await msg.edit(content);
-        console.log('[DutyBoard] Updated existing board message');
-        return;
-      }
+  if (dutyBoardMessageId) {
+    const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
+    if (msg) {
+      await msg.edit(content).catch(() => {});
+      return;
     }
-
-    const newMsg = await channel.send(content);
-    dutyBoardMessageId = newMsg.id;
-    console.log('[DutyBoard] Sent new board message, id =', dutyBoardMessageId);
-  } catch (err) {
-    console.error('[DutyBoard] Error sending/updating board message:', err);
   }
+
+  const newMsg = await channel.send(content);
+  dutyBoardMessageId = newMsg.id;
 }
 
-// ---------- SLASH COMMANDS ----------
+// ---------------------------
+// Slash command definitions
+// ---------------------------
+
 const commands = [
-  // /setup-app-panel
+  // /setup-app-panel - HC/Staff only, posts the Apply buttons
   new SlashCommandBuilder()
     .setName('setup-app-panel')
     .setDescription('Post the application panel with apply buttons.')
@@ -255,7 +216,7 @@ const commands = [
         )
     ),
 
-  // /ticket
+  // /ticket open / close
   new SlashCommandBuilder()
     .setName('ticket')
     .setDescription('Ticket system.')
@@ -288,7 +249,7 @@ const commands = [
         .setDescription('Close this ticket channel (with transcript).')
     ),
 
-  // /clock
+  // /clock in / out / status
   new SlashCommandBuilder()
     .setName('clock')
     .setDescription('Clock in and out of duty.')
@@ -298,41 +259,9 @@ const commands = [
         .setDescription('Clock in for duty.')
         .addStringOption(opt =>
           opt
-            .setName('assignment_primary')
-            .setDescription('Primary unit/subdivision.')
+            .setName('assignment')
+            .setDescription('Select your unit or subdivision.')
             .setRequired(true)
-            .addChoices(
-              { name: 'Patrol', value: 'Patrol' },
-              { name: 'High Command', value: 'High Command' },
-              { name: 'Command', value: 'Command' },
-              { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'Reaper', value: 'Reaper' },
-              { name: 'CID', value: 'CID' },
-              { name: 'IA', value: 'IA' },
-              { name: 'Supervisor', value: 'Supervisor' }
-            )
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('assignment_secondary')
-            .setDescription('Secondary unit/subdivision (optional).')
-            .setRequired(false)
-            .addChoices(
-              { name: 'Patrol', value: 'Patrol' },
-              { name: 'High Command', value: 'High Command' },
-              { name: 'Command', value: 'Command' },
-              { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'Reaper', value: 'Reaper' },
-              { name: 'CID', value: 'CID' },
-              { name: 'IA', value: 'IA' },
-              { name: 'Supervisor', value: 'Supervisor' }
-            )
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('assignment_tertiary')
-            .setDescription('Tertiary unit/subdivision (optional).')
-            .setRequired(false)
             .addChoices(
               { name: 'Patrol', value: 'Patrol' },
               { name: 'High Command', value: 'High Command' },
@@ -356,7 +285,7 @@ const commands = [
         .setDescription('Check your current clock-in status.')
     ),
 
-  // /activity
+  // /activity self/member/top
   new SlashCommandBuilder()
     .setName('activity')
     .setDescription('View duty activity.')
@@ -431,67 +360,66 @@ const commands = [
         )
     ),
 
-  // /report
+  // /setup-ticket-panel - posts ticket buttons
   new SlashCommandBuilder()
-    .setName('report')
-    .setDescription('Submit an official department report.')
-    .addStringOption(opt =>
-      opt
-        .setName('type')
-        .setDescription('Type of report to submit.')
-        .setRequired(true)
-        .addChoices(
-          { name: 'Citation Report', value: 'citation' },
-          { name: 'Arrest Report', value: 'arrest' },
-          { name: 'Use of Force Report', value: 'uof' },
-          { name: 'After Action Report (REAPER)', value: 'reaper_aar' },
-          { name: 'CID Incident Log', value: 'cid_incident' },
-          { name: 'CID Case Report', value: 'cid_case' },
-          { name: 'TU Shift Report', value: 'tu_shift' }
-        )
-    ),
+    .setName('setup-ticket-panel')
+    .setDescription('Post the ticket panel with buttons.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 
-  // /dutyboard
+  // /setup-report-panel - posts report buttons
   new SlashCommandBuilder()
-    .setName('dutyboard')
-    .setDescription('Manage the duty board.')
-    .addSubcommand(sub =>
-      sub
-        .setName('refresh')
-        .setDescription('Force-refresh the on-duty board.')
-    )
+    .setName('setup-report-panel')
+    .setDescription('Post the report panel with buttons.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
 ].map(cmd => cmd.toJSON());
 
-// ---------- REGISTER SLASH COMMANDS ----------
+// ---------------------------
+// Slash command registration & ready
+// ---------------------------
+
 client.once(Events.ClientReady, async readyClient => {
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
-  if (!BOT_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.warn('⚠️ Missing DISCORD env vars; slash commands may not register in cloud.');
-    return;
+  if (CLIENT_ID && GUILD_ID) {
+    const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
+    try {
+      console.log('🔁 Refreshing application (slash) commands...');
+      await rest.put(
+        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+        { body: commands }
+      );
+      console.log('✅ Slash commands registered.');
+    } catch (error) {
+      console.error('❌ Error registering commands:', error);
+    }
+  } else {
+    console.warn('⚠️ CLIENT_ID or GUILD_ID missing; slash commands not registered.');
   }
 
-  const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
-
-  try {
-    console.log('🔁 Refreshing application (slash) commands...');
-    await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
-    );
-    console.log('✅ Slash commands registered.');
-  } catch (error) {
-    console.error('❌ Error registering commands:', error);
+  // Initialize duty board updater
+  if (GUILD_ID) {
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (guild) {
+      await updateDutyBoard(guild).catch(() => {});
+      setInterval(() => {
+        updateDutyBoard(guild).catch(() => {});
+      }, 60_000);
+    } else {
+      console.warn('⚠️ Guild not found in cache for duty board.');
+    }
   }
 });
 
-// ---------- INTERACTION HANDLER ----------
+// ---------------------------
+// INTERACTION HANDLER
+// ---------------------------
+
 client.on(Events.InteractionCreate, async interaction => {
   // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // /setup-app-panel
+    // ----------------- /setup-app-panel -----------------
     if (commandName === 'setup-app-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       if (
@@ -550,18 +478,18 @@ client.on(Events.InteractionCreate, async interaction => {
         )
         .setColor(0x00aeff);
 
-      const panelChannel = rawConfig.applicationPanel?.channelId
-        ? await interaction.guild.channels.fetch(rawConfig.applicationPanel.channelId)
+      const channel = config.applicationPanel.channelId
+        ? await interaction.guild.channels.fetch(config.applicationPanel.channelId)
         : interaction.channel;
 
-      await panelChannel.send({ embeds: [embed], components: [row, row2] });
+      await channel.send({ embeds: [embed], components: [row, row2] });
       return interaction.reply({
         content: '✅ Application panel posted.',
         ephemeral: true
       });
     }
 
-    // /app
+    // ----------------- /app approve / deny -----------------
     if (commandName === 'app') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -613,7 +541,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         try {
           const channel = await interaction.client.channels.fetch(
-            rawConfig.channels.applicationsChannelId
+            config.channels.applicationsChannelId
           );
           if (channel && channel.isTextBased()) {
             await channel.send({ embeds: [embed] });
@@ -660,7 +588,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         try {
           const channel = await interaction.client.channels.fetch(
-            rawConfig.channels.applicationsChannelId
+            config.channels.applicationsChannelId
           );
           if (channel && channel.isTextBased()) {
             await channel.send({ embeds: [embed] });
@@ -676,7 +604,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /ticket
+    // ----------------- /ticket open / close -----------------
     if (commandName === 'ticket') {
       const sub = interaction.options.getSubcommand();
 
@@ -686,10 +614,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const guild = interaction.guild;
 
         let categoryId = null;
-        if (type === 'general') categoryId = rawConfig.categories.ticketGeneralCategoryId;
-        if (type === 'ia') categoryId = rawConfig.categories.ticketIACategoryId;
-        if (type === 'training') categoryId = rawConfig.categories.ticketTrainingCategoryId;
-        if (type === 'tech') categoryId = rawConfig.categories.ticketTechCategoryId;
+        if (type === 'general') categoryId = config.categories.ticketGeneralCategoryId;
+        if (type === 'ia') categoryId = config.categories.ticketIACategoryId;
+        if (type === 'training') categoryId = config.categories.ticketTrainingCategoryId;
+        if (type === 'tech') categoryId = config.categories.ticketTechCategoryId;
 
         const parent = categoryId ? guild.channels.cache.get(categoryId) : null;
 
@@ -776,10 +704,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const channel = interaction.channel;
 
         const validCategories = [
-          rawConfig.categories.ticketGeneralCategoryId,
-          rawConfig.categories.ticketIACategoryId,
-          rawConfig.categories.ticketTrainingCategoryId,
-          rawConfig.categories.ticketTechCategoryId
+          config.categories.ticketGeneralCategoryId,
+          config.categories.ticketIACategoryId,
+          config.categories.ticketTrainingCategoryId,
+          config.categories.ticketTechCategoryId
         ].filter(Boolean);
 
         if (!validCategories.includes(channel.parentId)) {
@@ -818,7 +746,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         try {
           const logChannel = await interaction.client.channels.fetch(
-            rawConfig.channels.ticketTranscriptChannelId
+            config.channels.ticketTranscriptChannelId
           );
           if (logChannel && logChannel.isTextBased()) {
             const embed = new EmbedBuilder()
@@ -826,7 +754,11 @@ client.on(Events.InteractionCreate, async interaction => {
               .setColor(0xffa500)
               .addFields(
                 { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
-                { name: 'Closed By', value: `<@${interaction.user.id}>`, inline: true },
+                {
+                  name: 'Closed By',
+                  value: `<@${interaction.user.id}>`,
+                  inline: true
+                },
                 {
                   name: 'Original User',
                   value: ticket ? `<@${ticket.userId}>` : 'Unknown',
@@ -848,7 +780,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /clock
+    // ----------------- /clock -----------------
     if (commandName === 'clock') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -862,10 +794,10 @@ client.on(Events.InteractionCreate, async interaction => {
         });
       }
 
+      const onDutyRoleId = config.roles.onDutyRoleId || null;
+
       if (sub === 'in') {
-        const primary = interaction.options.getString('assignment_primary');
-        const secondary = interaction.options.getString('assignment_secondary');
-        const tertiary = interaction.options.getString('assignment_tertiary');
+        const assignment = interaction.options.getString('assignment');
 
         const open = getOpenSession(interaction.user.id);
         if (open) {
@@ -875,11 +807,7 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const assignments = [primary, secondary, tertiary]
-          .filter(Boolean)
-          .filter((v, i, arr) => arr.indexOf(v) === i);
-
-        const session = clockIn(interaction.user.id, assignments);
+        const session = clockIn(interaction.user.id, assignment);
         if (!session) {
           return interaction.reply({
             content: '⚠️ Could not clock you in (already in session?).',
@@ -887,16 +815,15 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const onDutyRoleId = config.roles.onDutyRoleId;
-        const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-        if (guildMember && onDutyRoleId) {
-          await guildMember.roles.add(onDutyRoleId).catch(() => {});
+        if (onDutyRoleId && !member.roles.cache.has(onDutyRoleId)) {
+          await member.roles.add(onDutyRoleId).catch(() => {});
         }
 
-        await updateDutyBoard(interaction.guild);
+        const guild = interaction.guild;
+        await updateDutyBoard(guild).catch(() => {});
 
         await interaction.reply({
-          content: `✅ You are now clocked in as **${assignments.join(', ')}**.`,
+          content: `✅ You are now clocked in as **${assignment}**.`,
           ephemeral: true
         });
       }
@@ -910,15 +837,16 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const onDutyRoleId = config.roles.onDutyRoleId;
-        const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-        if (guildMember && onDutyRoleId) {
-          await guildMember.roles.remove(onDutyRoleId).catch(() => {});
+        const duration = session.clockOut - session.clockIn;
+
+        const onDutyRoleId2 = config.roles.onDutyRoleId || null;
+        if (onDutyRoleId2 && member.roles.cache.has(onDutyRoleId2)) {
+          await member.roles.remove(onDutyRoleId2).catch(() => {});
         }
 
-        await updateDutyBoard(interaction.guild);
+        const guild = interaction.guild;
+        await updateDutyBoard(guild).catch(() => {});
 
-        const duration = session.clockOut - session.clockIn;
         await interaction.reply({
           content: `✅ You are now clocked out. Session duration: **${msToHuman(duration)}**.`,
           ephemeral: true
@@ -935,17 +863,11 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         const duration = Date.now() - open.clockIn;
-
-        let assignmentsText = '';
-        if (Array.isArray(open.assignments) && open.assignments.length > 0) {
-          assignmentsText = `Assignments: **${open.assignments.join(', ')}**\n`;
-        } else if (open.assignment) {
-          assignmentsText = `Assignment: **${open.assignment}**\n`;
-        }
-
+        const assignments = Array.isArray(open.assignments) ? open.assignments : [];
+        const unitText = assignments.length ? `Assignments: **${assignments.join(', ')}**\n` : '';
         await interaction.reply({
           content:
-            `⏱️ You are currently clocked in.\n${assignmentsText}` +
+            `⏱️ You are currently clocked in.\n${unitText}` +
             `Started: <t:${Math.floor(open.clockIn / 1000)}:R>\n` +
             `Elapsed: **${msToHuman(duration)}**`,
           ephemeral: true
@@ -953,7 +875,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /activity
+    // ----------------- /activity -----------------
     if (commandName === 'activity') {
       const sub = interaction.options.getSubcommand();
 
@@ -1052,123 +974,133 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /report
-    if (commandName === 'report') {
-      const type = interaction.options.getString('type');
+    // ----------------- /setup-ticket-panel -----------------
+    if (commandName === 'setup-ticket-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
 
-      const swornRoles = config.roles.swornRoleIds || [];
-      const isSworn = hasAnyRole(member, swornRoles);
-      if (!isSworn) {
+      if (
+        !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
+        !hasAnyRole(member, config.roles.highCommandRoleIds || [])
+      ) {
         return interaction.reply({
-          content: '❌ Only sworn personnel may file official reports.',
+          content: '❌ You do not have permission to use this.',
           ephemeral: true
         });
       }
 
-      let title = 'Report';
-      let modalId = `report_${type}`;
+      const ticketEmbed = new EmbedBuilder()
+        .setTitle('SALEA Support Tickets')
+        .setDescription(
+          'Click one of the buttons below to open a ticket.\n\n' +
+          'Please provide as much detail as possible so staff can assist you.'
+        )
+        .setColor(0x00aeff);
 
-      const modal = new ModalBuilder().setCustomId(modalId);
+      const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_btn_general')
+          .setLabel('General Support')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('ticket_btn_ia')
+          .setLabel('IA / Complaint')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('ticket_btn_training')
+          .setLabel('Training / Ride-Along')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId('ticket_btn_tech')
+          .setLabel('Tech Issue')
+          .setStyle(ButtonStyle.Secondary)
+      );
 
-      const rows = [];
-      function addField(customId, label, style, required = true) {
-        const input = new TextInputBuilder()
-          .setCustomId(customId)
-          .setLabel(label)
-          .setStyle(style)
-          .setRequired(required);
-        rows.push(new ActionRowBuilder().addComponents(input));
-      }
+      await interaction.channel.send({
+        embeds: [ticketEmbed],
+        components: [row1]
+      });
 
-      if (type === 'citation') {
-        title = 'Citation Report';
-        addField('subject_name', 'Subject Name', TextInputStyle.Short);
-        addField('subject_dob', 'Subject DOB', TextInputStyle.Short);
-        addField('violations', 'Violations / Statutes', TextInputStyle.Paragraph);
-        addField('location', 'Location of Stop / Incident', TextInputStyle.Short);
-        addField('narrative', 'Narrative / Details', TextInputStyle.Paragraph);
-      } else if (type === 'arrest') {
-        title = 'Arrest Report';
-        addField('subject_name', 'Subject Name', TextInputStyle.Short);
-        addField('subject_dob', 'Subject DOB', TextInputStyle.Short);
-        addField('charges', 'Charges Filed', TextInputStyle.Paragraph);
-        addField('report_number', 'Report / Case Number', TextInputStyle.Short);
-        addField('narrative', 'Narrative / Probable Cause', TextInputStyle.Paragraph);
-      } else if (type === 'uof') {
-        title = 'Use of Force Report';
-        addField('incident_datetime', 'Incident Date & Time', TextInputStyle.Short);
-        addField('location', 'Location', TextInputStyle.Short);
-        addField('force_used', 'Type(s) of Force Used', TextInputStyle.Paragraph);
-        addField('injuries', 'Injuries / Medical (N/A if none)', TextInputStyle.Paragraph);
-        addField('summary', 'Incident Summary', TextInputStyle.Paragraph);
-      } else if (type === 'reaper_aar') {
-        title = 'After Action Report (REAPER)';
-        addField('operation_name', 'Operation Name', TextInputStyle.Short);
-        addField('operation_datetime', 'Date & Time', TextInputStyle.Short);
-        addField('objective', 'Objective(s)', TextInputStyle.Paragraph);
-        addField('outcome', 'Outcome / Results', TextInputStyle.Paragraph);
-        addField('lessons', 'Lessons Learned / Notes', TextInputStyle.Paragraph);
-      } else if (type === 'cid_incident') {
-        title = 'CID Incident Log';
-        addField('incident_title', 'Incident Title', TextInputStyle.Short);
-        addField('case_number', 'Case Number', TextInputStyle.Short);
-        addField('involved_units', 'Involved Units / Officers', TextInputStyle.Paragraph);
-        addField('summary', 'Summary', TextInputStyle.Paragraph);
-        addField('next_steps', 'Next Steps / Follow-up', TextInputStyle.Paragraph);
-      } else if (type === 'cid_case') {
-        title = 'CID Case Report';
-        addField('case_number', 'Case Number', TextInputStyle.Short);
-        addField('status', 'Case Status (Open / Closed / etc.)', TextInputStyle.Short);
-        addField('suspects', 'Suspect(s)', TextInputStyle.Paragraph);
-        addField('evidence', 'Key Evidence', TextInputStyle.Paragraph);
-        addField('summary', 'Case Summary', TextInputStyle.Paragraph);
-      } else if (type === 'tu_shift') {
-        title = 'TU Shift Report';
-        addField('shift_date', 'Shift Date', TextInputStyle.Short);
-        addField('unit', 'Unit / Call Sign', TextInputStyle.Short);
-        addField('activity', 'Stops / Citations / Arrests Summary', TextInputStyle.Paragraph);
-        addField('conditions', 'Road / Weather / Traffic Conditions', TextInputStyle.Paragraph);
-        addField('notes', 'Additional Notes', TextInputStyle.Paragraph);
-      } else {
-        return interaction.reply({
-          content: '❌ Unknown report type.',
-          ephemeral: true
-        });
-      }
-
-      modal.setTitle(title);
-      modal.addComponents(...rows.slice(0, 5));
-
-      await interaction.showModal(modal);
+      return interaction.reply({
+        content: '✅ Ticket panel posted.',
+        ephemeral: true
+      });
     }
 
-    // /dutyboard
-    if (commandName === 'dutyboard') {
-      const sub = interaction.options.getSubcommand();
+    // ----------------- /setup-report-panel -----------------
+    if (commandName === 'setup-report-panel') {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
 
-      if (sub === 'refresh') {
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-        const hcRoles = config.roles.highCommandRoleIds || [];
-        if (!hasAnyRole(member, hcRoles)) {
-          return interaction.reply({
-            content: '❌ Only High Command may refresh the duty board.',
-            ephemeral: true
-          });
-        }
-
-        await updateDutyBoard(interaction.guild);
+      if (
+        !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
+        !hasAnyRole(member, config.roles.highCommandRoleIds || [])
+      ) {
         return interaction.reply({
-          content: '✅ Duty board refresh requested. Check the duty channel.',
+          content: '❌ You do not have permission to use this.',
           ephemeral: true
         });
       }
+
+      const reportEmbed = new EmbedBuilder()
+        .setTitle('SALEA Reports')
+        .setDescription(
+          'Click a button below to file a report. A form will pop up asking for details.\n\n' +
+          'Reports will be logged in the appropriate department channels.'
+        )
+        .setColor(0xfbbf24);
+
+      const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('report_btn_citation')
+          .setLabel('Citation Report')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('report_btn_arrest')
+          .setLabel('Arrest Report')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('report_btn_uof')
+          .setLabel('Use of Force')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('report_btn_reaper_aar')
+          .setLabel('REAPER AAR')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('report_btn_cid_incident')
+          .setLabel('CID Incident Log')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('report_btn_cid_case')
+          .setLabel('CID Case Report')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('report_btn_tu_shift')
+          .setLabel('TU Shift Report')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.channel.send({
+        embeds: [reportEmbed],
+        components: [row1, row2]
+      });
+
+      return interaction.reply({
+        content: '✅ Report panel posted.',
+        ephemeral: true
+      });
     }
   }
 
-  // Button interactions (applications)
+  // -----------------------------------
+  // Button interactions (applications, tickets, reports)
+  // -----------------------------------
   if (interaction.isButton()) {
     const id = interaction.customId;
+
+    // ----- Application buttons -----
     if (id.startsWith('apply_')) {
       const divisionKey = id.replace('apply_', '');
       let divisionName = 'Unknown';
@@ -1217,12 +1149,187 @@ client.on(Events.InteractionCreate, async interaction => {
       modal.addComponents(row1, row2, row3, row4);
 
       await interaction.showModal(modal);
+      return;
+    }
+
+    // ----- Ticket buttons -----
+    if (id.startsWith('ticket_btn_')) {
+      let type = 'general';
+      let subjectPrefix = '';
+
+      if (id === 'ticket_btn_general') {
+        type = 'general';
+        subjectPrefix = 'General Support';
+      } else if (id === 'ticket_btn_ia') {
+        type = 'ia';
+        subjectPrefix = 'IA / Complaint';
+      } else if (id === 'ticket_btn_training') {
+        type = 'training';
+        subjectPrefix = 'Training / Ride-Along';
+      } else if (id === 'ticket_btn_tech') {
+        type = 'tech';
+        subjectPrefix = 'Tech Issue';
+      }
+
+      const subject = `${subjectPrefix} - by ${interaction.user.tag}`;
+      const guild = interaction.guild;
+
+      let categoryId = null;
+      if (type === 'general') categoryId = config.categories.ticketGeneralCategoryId;
+      if (type === 'ia') categoryId = config.categories.ticketIACategoryId;
+      if (type === 'training') categoryId = config.categories.ticketTrainingCategoryId;
+      if (type === 'tech') categoryId = config.categories.ticketTechCategoryId;
+
+      const parent = categoryId ? guild.channels.cache.get(categoryId) : null;
+
+      const overwrites = [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel]
+        },
+        {
+          id: interaction.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory
+          ]
+        }
+      ];
+
+      if (config.roles.staffRoleId) {
+        overwrites.push({
+          id: config.roles.staffRoleId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageMessages
+          ]
+        });
+      }
+      if (type === 'ia' && config.roles.iaRoleId) {
+        overwrites.push({
+          id: config.roles.iaRoleId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory
+          ]
+        });
+      }
+
+      const baseName =
+        type === 'ia'
+          ? 'ia'
+          : type === 'training'
+          ? 'training'
+          : type === 'tech'
+          ? 'tech'
+          : 'ticket';
+
+      const channelName = `${baseName}-${interaction.user.username.toLowerCase()}`.replace(
+        /[^a-z0-9\-]/g,
+        ''
+      );
+
+      const ticketChannel = await guild.channels.create({
+        name: channelName || 'ticket',
+        type: ChannelType.GuildText,
+        parent: parent || undefined,
+        permissionOverwrites: overwrites,
+        topic: `Ticket for ${interaction.user.tag} | Type: ${type} | Subject: ${subject}`
+      });
+
+      addTicket({
+        channelId: ticketChannel.id,
+        userId: interaction.user.id,
+        type,
+        subject,
+        createdAt: Date.now(),
+        closedAt: null
+      });
+
+      await interaction.reply({
+        content: `✅ Ticket created: ${ticketChannel}`,
+        ephemeral: true
+      });
+
+      await ticketChannel.send(
+        `👋 Hello ${interaction.user}, a staff member will be with you shortly.\n` +
+        `**Type:** ${type}\n**Subject:** ${subject}`
+      );
+
+      return;
+    }
+
+    // ----- Report buttons -----
+    if (id.startsWith('report_btn_')) {
+      let typeKey = id.replace('report_btn_', '');
+      let title = 'Report';
+      let shortLabel = 'Report Details';
+
+      if (typeKey === 'citation') {
+        title = 'Citation Report';
+        shortLabel = 'Citation Details';
+      } else if (typeKey === 'arrest') {
+        title = 'Arrest Report';
+        shortLabel = 'Arrest Details';
+      } else if (typeKey === 'uof') {
+        title = 'Use of Force Report';
+        shortLabel = 'Incident Details';
+      } else if (typeKey === 'reaper_aar') {
+        title = 'REAPER After Action Report';
+        shortLabel = 'AAR Summary';
+      } else if (typeKey === 'cid_incident') {
+        title = 'CID Incident Log';
+        shortLabel = 'Incident Details';
+      } else if (typeKey === 'cid_case') {
+        title = 'CID Case Report';
+        shortLabel = 'Case Summary';
+      } else if (typeKey === 'tu_shift') {
+        title = 'Traffic Unit Shift Report';
+        shortLabel = 'Shift Summary';
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`report_modal_${typeKey}`)
+        .setTitle(title);
+
+      const q1_subject = new TextInputBuilder()
+        .setCustomId('rep_subject')
+        .setLabel('Short title / subject')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const q2_details = new TextInputBuilder()
+        .setCustomId('rep_details')
+        .setLabel(shortLabel)
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      const q3_involved = new TextInputBuilder()
+        .setCustomId('rep_involved')
+        .setLabel('Involved units / persons (optional)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false);
+
+      const row1 = new ActionRowBuilder().addComponents(q1_subject);
+      const row2 = new ActionRowBuilder().addComponents(q2_details);
+      const row3 = new ActionRowBuilder().addComponents(q3_involved);
+
+      modal.addComponents(row1, row2, row3);
+
+      await interaction.showModal(modal);
+      return;
     }
   }
 
-  // Modal submits (applications + reports)
+  // -----------------------------------
+  // Modal submit for applications & reports
+  // -----------------------------------
   if (interaction.isModalSubmit()) {
-    // Applications
+    // ----- Application modals -----
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
       let divisionName = 'Unknown';
@@ -1279,7 +1386,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       try {
         const channel = await interaction.client.channels.fetch(
-          rawConfig.channels.applicationsChannelId
+          config.channels.applicationsChannelId
         );
         if (channel && channel.isTextBased()) {
           const content = config.roles.hrRoleId
@@ -1295,276 +1402,203 @@ client.on(Events.InteractionCreate, async interaction => {
         content: `✅ Your application to **${divisionName}** has been submitted. A member of HR/High Command will review it.`,
         ephemeral: true
       });
+      return;
     }
 
-    // Reports
-    if (interaction.customId.startsWith('report_')) {
-      const type = interaction.customId.replace('report_', '');
-      const reportChannels = rawConfig.reportChannels || {};
+    // ----- Report modals -----
+    if (interaction.customId.startsWith('report_modal_')) {
+      const typeKey = interaction.customId.replace('report_modal_', '');
+      const subject = interaction.fields.getTextInputValue('rep_subject');
+      const details = interaction.fields.getTextInputValue('rep_details');
+      const involved = interaction.fields.getTextInputValue('rep_involved') || 'N/A';
 
-      let logChannelId = null;
-      let title = 'Report';
-      let color = 0x00aeff;
-      const fields = [];
+      const user = interaction.user;
+      const guild = interaction.guild;
 
-      function pushField(name, value, inline = false) {
-        fields.push({ name, value: value || 'N/A', inline });
+      const rc = config.reportChannels || {};
+      let channelId = null;
+      let reportTitle = 'Report';
+
+      if (typeKey === 'citation') {
+        channelId = rc.citationLogChannelId;
+        reportTitle = 'Citation Report';
+      } else if (typeKey === 'arrest') {
+        channelId = rc.arrestLogChannelId;
+        reportTitle = 'Arrest Report';
+      } else if (typeKey === 'uof') {
+        channelId = rc.uofLogChannelId;
+        reportTitle = 'Use of Force Report';
+      } else if (typeKey === 'reaper_aar') {
+        channelId = rc.reaperAARChannelId;
+        reportTitle = 'REAPER After Action Report';
+      } else if (typeKey === 'cid_incident') {
+        channelId = rc.cidIncidentLogChannelId;
+        reportTitle = 'CID Incident Log';
+      } else if (typeKey === 'cid_case') {
+        channelId = rc.cidCaseReportChannelId;
+        reportTitle = 'CID Case Report';
+      } else if (typeKey === 'tu_shift') {
+        channelId = rc.tuShiftReportChannelId;
+        reportTitle = 'TU Shift Report';
       }
 
-      if (type === 'citation') {
-        logChannelId = reportChannels.citationLogChannelId;
-        title = 'Citation Report';
-        const subjectName = interaction.fields.getTextInputValue('subject_name');
-        const subjectDob = interaction.fields.getTextInputValue('subject_dob');
-        const violations = interaction.fields.getTextInputValue('violations');
-        const location = interaction.fields.getTextInputValue('location');
-        const narrative = interaction.fields.getTextInputValue('narrative');
-
-        pushField('Subject Name', subjectName, true);
-        pushField('DOB', subjectDob, true);
-        pushField('Location', location, false);
-        pushField('Violations / Statutes', violations, false);
-        pushField('Narrative', narrative, false);
-        color = 0x3498db;
-      } else if (type === 'arrest') {
-        logChannelId = reportChannels.arrestLogChannelId;
-        title = 'Arrest Report';
-        const subjectName = interaction.fields.getTextInputValue('subject_name');
-        const subjectDob = interaction.fields.getTextInputValue('subject_dob');
-        const charges = interaction.fields.getTextInputValue('charges');
-        const reportNumber = interaction.fields.getTextInputValue('report_number');
-        const narrative = interaction.fields.getTextInputValue('narrative');
-
-        pushField('Subject Name', subjectName, true);
-        pushField('DOB', subjectDob, true);
-        pushField('Report / Case #', reportNumber, true);
-        pushField('Charges', charges, false);
-        pushField('Narrative / Probable Cause', narrative, false);
-        color = 0xe67e22;
-      } else if (type === 'uof') {
-        logChannelId = reportChannels.uofLogChannelId;
-        title = 'Use of Force Report';
-        const dt = interaction.fields.getTextInputValue('incident_datetime');
-        const location = interaction.fields.getTextInputValue('location');
-        const forceUsed = interaction.fields.getTextInputValue('force_used');
-        const injuries = interaction.fields.getTextInputValue('injuries');
-        const summary = interaction.fields.getTextInputValue('summary');
-
-        pushField('Date & Time', dt, true);
-        pushField('Location', location, true);
-        pushField('Force Used', forceUsed, false);
-        pushField('Injuries / Medical', injuries, false);
-        pushField('Summary', summary, false);
-        color = 0xc0392b;
-      } else if (type === 'reaper_aar') {
-        logChannelId = reportChannels.reaperAARChannelId;
-        title = 'After Action Report (REAPER)';
-        const opName = interaction.fields.getTextInputValue('operation_name');
-        const dt = interaction.fields.getTextInputValue('operation_datetime');
-        const objective = interaction.fields.getTextInputValue('objective');
-        const outcome = interaction.fields.getTextInputValue('outcome');
-        const lessons = interaction.fields.getTextInputValue('lessons');
-
-        pushField('Operation Name', opName, true);
-        pushField('Date & Time', dt, true);
-        pushField('Objectives', objective, false);
-        pushField('Outcome', outcome, false);
-        pushField('Lessons Learned / Notes', lessons, false);
-        color = 0x9b59b6;
-      } else if (type === 'cid_incident') {
-        logChannelId = reportChannels.cidIncidentLogChannelId;
-        title = 'CID Incident Log';
-        const incidentTitle = interaction.fields.getTextInputValue('incident_title');
-        const caseNumber = interaction.fields.getTextInputValue('case_number');
-        const units = interaction.fields.getTextInputValue('involved_units');
-        const summary = interaction.fields.getTextInputValue('summary');
-        const nextSteps = interaction.fields.getTextInputValue('next_steps');
-
-        pushField('Incident Title', incidentTitle, true);
-        pushField('Case Number', caseNumber, true);
-        pushField('Involved Units / Officers', units, false);
-        pushField('Summary', summary, false);
-        pushField('Next Steps / Follow-up', nextSteps, false);
-        color = 0x1abc9c;
-      } else if (type === 'cid_case') {
-        logChannelId = reportChannels.cidCaseReportChannelId;
-        title = 'CID Case Report';
-        const caseNumber = interaction.fields.getTextInputValue('case_number');
-        const status = interaction.fields.getTextInputValue('status');
-        const suspects = interaction.fields.getTextInputValue('suspects');
-        const evidence = interaction.fields.getTextInputValue('evidence');
-        const summary = interaction.fields.getTextInputValue('summary');
-
-        pushField('Case Number', caseNumber, true);
-        pushField('Status', status, true);
-        pushField('Suspect(s)', suspects, false);
-        pushField('Key Evidence', evidence, false);
-        pushField('Case Summary', summary, false);
-        color = 0x16a085;
-      } else if (type === 'tu_shift') {
-        logChannelId = reportChannels.tuShiftReportChannelId;
-        title = 'TU Shift Report';
-        const shiftDate = interaction.fields.getTextInputValue('shift_date');
-        const unit = interaction.fields.getTextInputValue('unit');
-        const activity = interaction.fields.getTextInputValue('activity');
-        const conditions = interaction.fields.getTextInputValue('conditions');
-        const notes = interaction.fields.getTextInputValue('notes');
-
-        pushField('Shift Date', shiftDate, true);
-        pushField('Unit / Call Sign', unit, true);
-        pushField('Activity Summary', activity, false);
-        pushField('Conditions', conditions, false);
-        pushField('Additional Notes', notes, false);
-        color = 0xf1c40f;
-      } else {
+      if (!channelId) {
+        console.warn(`No report log channel configured for report type '${typeKey}'`);
         return interaction.reply({
-          content: '❌ Unknown report type.',
-          ephemeral: true
-        });
-      }
-
-      if (!logChannelId) {
-        return interaction.reply({
-          content: '⚠️ No log channel configured for this report type. Please notify High Command.',
+          content: '⚠️ This report type is not configured yet. Please contact High Command.',
           ephemeral: true
         });
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setColor(color)
-        .addFields(...fields)
-        .setFooter({ text: `Filed by ${interaction.user.tag} (${interaction.user.id})` })
+        .setTitle(reportTitle)
+        .setColor(0xf97316)
+        .addFields(
+          { name: 'Filed By', value: `<@${user.id}> (${user.id})`, inline: false },
+          { name: 'Subject', value: subject || 'N/A', inline: false },
+          { name: 'Details', value: details || 'N/A', inline: false },
+          { name: 'Involved', value: involved, inline: false }
+        )
         .setTimestamp(new Date());
 
       try {
-        const channel = await interaction.client.channels.fetch(logChannelId);
-        if (!channel || !channel.isTextBased()) {
-          throw new Error('Log channel invalid or not text-based.');
+        const logChannel = await guild.channels.fetch(channelId);
+        if (logChannel && logChannel.isTextBased()) {
+          await logChannel.send({ embeds: [embed] });
+        } else {
+          console.warn(`Report log channel not text-based or not found: ${channelId}`);
         }
-
-        await channel.send({ embeds: [embed] });
-
-        await interaction.reply({
-          content: `✅ Your **${title}** has been logged.`,
-          ephemeral: true
-        });
       } catch (err) {
-        console.error('Error sending report log:', err);
-        await interaction.reply({
-          content: '❌ Failed to send report to the log channel. Please notify High Command.',
-          ephemeral: true
-        });
+        console.error('Error sending report embed:', err);
       }
+
+      return interaction.reply({
+        content: `✅ Your **${reportTitle}** has been submitted.`,
+        ephemeral: true
+      });
     }
   }
 });
 
-// ---------- START DISCORD BOT ----------
-if (BOT_TOKEN) {
-  client.login(BOT_TOKEN);
-} else {
-  console.error('❌ DISCORD_TOKEN not set; bot will not log in.');
-}
+// ---------------------------
+// Admin dashboard (Express)
+// ---------------------------
 
-// ---------- ADMIN DASHBOARD (EXPRESS) ----------
 const app = express();
 
-const adminUser = process.env.ADMIN_USER || 'admin';
-const adminPass = process.env.ADMIN_PASS || 'changeme';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'password';
 
 app.use(
   '/admin',
   basicAuth({
-    users: { [adminUser]: adminPass },
-    challenge: true,
-    realm: 'SALEA-Admin'
+    users: { [ADMIN_USER]: ADMIN_PASS },
+    challenge: true
   })
 );
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-app.get('/', (req, res) => {
-  res.send('SALEA Management Bot is running.');
-});
-
 app.get('/admin', (req, res) => {
   try {
-    const now = Date.now();
-    const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const cfg = config || {};
+    const roles = cfg.roles || {};
+    const channels = cfg.channels || {};
 
-    const openSessions = getAllOpenSessions() || [];
-    const recentSessions = getSessionsInRange(weekAgo, null) || [];
+    const openSessions = getAllOpenSessions ? getAllOpenSessions() : [];
+
+    const now = Date.now();
+    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const recentSessions = getSessionsInRange ? getSessionsInRange(sevenDaysAgo, null) : [];
+    const totalMs = recentSessions.reduce((acc, s) => acc + (s.clockOut - s.clockIn), 0);
+
+    const formatMs = ms => {
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const parts = [];
+      if (h) parts.push(`${h}h`);
+      if (m) parts.push(`${m}m`);
+      return parts.length ? parts.join(' ') : '0m';
+    };
 
     const html = `
-      <html>
-      <head>
-        <title>SALEA Admin Dashboard</title>
-        <style>
-          body { font-family: Arial, sans-serif; background: #0b1622; color: #f5f5f5; padding: 20px; }
-          h1 { color: #f1c40f; }
-          h2 { color: #3498db; }
-          .card { background: #111827; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
-          table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-          th, td { padding: 8px; border-bottom: 1px solid #1f2937; }
-          th { text-align: left; color: #9ca3af; font-weight: 600; }
-          .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1f2937; font-size: 12px; margin-right: 4px; }
-        </style>
-      </head>
-      <body>
-        <h1>SALEA Admin Dashboard</h1>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>SALEA Admin Dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e5e7eb; padding: 20px; }
+    h1 { color: #fbbf24; }
+    h2 { margin-top: 24px; color: #93c5fd; }
+    .card { background: #020617; border-radius: 12px; padding: 16px; margin-top: 12px; border: 1px solid #1f2937; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 6px 8px; text-align: left; font-size: 14px; }
+    th { color: #9ca3af; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
+    code { background: #111827; padding: 2px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>SALEA Admin Dashboard</h1>
+  <p>Logged in as <strong>${req.auth?.user || 'unknown'}</strong></p>
 
-        <div class="card">
-          <h2>On Duty Right Now</h2>
-          <p>Total on duty: <strong>${openSessions.length}</strong></p>
-          <table>
+  <div class="card">
+    <h2>Duty Overview (last 7 days)</h2>
+    <p>Total completed sessions: <strong>${recentSessions.length}</strong></p>
+    <p>Total duty time: <strong>${formatMs(totalMs)}</strong></p>
+  </div>
+
+  <div class="card">
+    <h2>On Duty Now</h2>
+    ${
+      openSessions.length === 0
+        ? '<p>No one is currently clocked in.</p>'
+        : `
+        <table>
+          <thead>
             <tr>
-              <th>User ID</th>
+              <th>User</th>
               <th>Assignments</th>
-              <th>Clock In</th>
+              <th>Started</th>
               <th>Elapsed</th>
             </tr>
+          </thead>
+          <tbody>
             ${openSessions
               .map(s => {
                 const assignments = Array.isArray(s.assignments)
-                  ? s.assignments.join(', ')
-                  : (s.assignment || 'Unspecified');
-                const started = new Date(s.clockIn).toLocaleString();
-                const elapsed = msToHuman(now - s.clockIn);
+                  ? s.assignments
+                  : [];
+                const started = new Date(s.clockIn);
+                const elapsed = formatMs(Date.now() - s.clockIn);
                 return `
                   <tr>
-                    <td>${s.userId}</td>
-                    <td>${assignments}</td>
-                    <td>${started}</td>
+                    <td><code>${s.userId}</code></td>
+                    <td>${assignments.join(', ') || 'Unspecified'}</td>
+                    <td>${started.toISOString()}</td>
                     <td>${elapsed}</td>
                   </tr>
                 `;
               })
               .join('')}
-          </table>
-        </div>
+          </tbody>
+        </table>
+      `
+    }
+  </div>
 
-        <div class="card">
-          <h2>Duty Sessions (Last 7 Days)</h2>
-          <p>Total completed sessions: <strong>${recentSessions.length}</strong></p>
-        </div>
-
-        <div class="card">
-          <h2>Config Snapshot</h2>
-          <p><span class="tag">Guild ID</span> ${GUILD_ID || 'not set'}</p>
-          <p><span class="tag">Applications Log Channel</span> ${rawConfig.channels.applicationsChannelId || 'n/a'}</p>
-          <p><span class="tag">Activity Log Channel</span> ${rawConfig.channels.activityLogChannelId || 'n/a'}</p>
-        </div>
-
-      </body>
-      </html>
+  <div class="card">
+    <h2>Config Snapshot</h2>
+    <p><strong>Roles object keys:</strong> ${Object.keys(roles).join(', ') || 'none'}</p>
+    <p><strong>Channels object keys:</strong> ${Object.keys(channels).join(', ') || 'none'}</p>
+  </div>
+</body>
+</html>
     `;
 
-    res.send(html);
+    res.status(200).send(html);
   } catch (err) {
-    console.error('Error rendering admin dashboard:', err);
-    res.status(500).send('Dashboard error');
+    console.error('Error in /admin handler:', err);
+    res.status(500).send('Internal server error');
   }
 });
 
@@ -1572,3 +1606,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Admin dashboard listening on port ${PORT}`);
 });
+
+// ---------------------------
+// Start the bot
+// ---------------------------
+
+client.login(BOT_TOKEN);

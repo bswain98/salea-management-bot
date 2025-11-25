@@ -1,14 +1,14 @@
 {
   "name": "salea-management-bot",
   "version": "1.0.0",
-  "description": "SALEA Discord management bot with admin dashboard",
+  "description": "SALEA management bot (applications, tickets, clock, reports, admin dashboard)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
-    "express": "^4.21.2",
+    "express": "^4.19.2",
     "express-basic-auth": "^1.2.1"
   }
 }
