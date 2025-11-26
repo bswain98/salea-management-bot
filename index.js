@@ -370,6 +370,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName('setup-report-panel')
     .setDescription('Post the report panel with buttons.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+
+  // /setup-request-panel - posts role & roster request buttons
+  new SlashCommandBuilder()
+    .setName('setup-request-panel')
+    .setDescription('Post the roster & role request panel.')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
 ].map(cmd => cmd.toJSON());
 
@@ -1092,10 +1098,56 @@ client.on(Events.InteractionCreate, async interaction => {
         ephemeral: true
       });
     }
+
+    // ----------------- /setup-request-panel -----------------
+    if (commandName === 'setup-request-panel') {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+
+      if (
+        !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
+        !hasAnyRole(member, config.roles.highCommandRoleIds || [])
+      ) {
+        return interaction.reply({
+          content: '❌ You do not have permission to use this.',
+          ephemeral: true
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('SALEA Roster & Role Requests')
+        .setDescription(
+          'Use the buttons below to submit a request.\n\n' +
+          '**Role Request** – ask for roles to be added/changed.\n' +
+          '**Roster Request** – request roster updates for members.\n\n' +
+          'All requests will be logged in this channel so Command can review and check them off.'
+        )
+        .setColor(0x3b82f6);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('request_btn_role')
+          .setLabel('Role Request')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('request_btn_roster')
+          .setLabel('Roster Request')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+
+      return interaction.reply({
+        content: '✅ Request panel posted.',
+        ephemeral: true
+      });
+    }
   }
 
   // -----------------------------------
-  // Button interactions (applications, tickets, reports)
+  // Button interactions (applications, tickets, reports, requests)
   // -----------------------------------
   if (interaction.isButton()) {
     const id = interaction.customId;
@@ -1323,10 +1375,92 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.showModal(modal);
       return;
     }
+
+    // ----- Role Request button -----
+    if (id === 'request_btn_role') {
+      const modal = new ModalBuilder()
+        .setCustomId('role_request_modal')
+        .setTitle('Role Request');
+
+      const nameInput = new TextInputBuilder()
+        .setCustomId('role_name')
+        .setLabel('Name')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const rolesInput = new TextInputBuilder()
+        .setCustomId('role_roles_needed')
+        .setLabel('Roles needed')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      const approvedInput = new TextInputBuilder()
+        .setCustomId('role_approved_by')
+        .setLabel('Approved by (if applicable)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+      const row1 = new ActionRowBuilder().addComponents(nameInput);
+      const row2 = new ActionRowBuilder().addComponents(rolesInput);
+      const row3 = new ActionRowBuilder().addComponents(approvedInput);
+
+      modal.addComponents(row1, row2, row3);
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ----- Roster Request button -----
+    if (id === 'request_btn_roster') {
+      const modal = new ModalBuilder()
+        .setCustomId('roster_request_modal')
+        .setTitle('Roster Request');
+
+      const templateInput = new TextInputBuilder()
+        .setCustomId('rost_template')
+        .setLabel('Template (e.g. Patrol, CID, SRT)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const nameInput = new TextInputBuilder()
+        .setCustomId('rost_name')
+        .setLabel('Name (In-Game First and Last)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const discordIdInput = new TextInputBuilder()
+        .setCustomId('rost_discord_id')
+        .setLabel('Discord ID')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const tzInput = new TextInputBuilder()
+        .setCustomId('rost_time_zone')
+        .setLabel('Time Zone')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const requestInput = new TextInputBuilder()
+        .setCustomId('rost_request')
+        .setLabel('Roster Request (details)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      const row1 = new ActionRowBuilder().addComponents(templateInput);
+      const row2 = new ActionRowBuilder().addComponents(nameInput);
+      const row3 = new ActionRowBuilder().addComponents(discordIdInput);
+      const row4 = new ActionRowBuilder().addComponents(tzInput);
+      const row5 = new ActionRowBuilder().addComponents(requestInput);
+
+      modal.addComponents(row1, row2, row3, row4, row5);
+
+      await interaction.showModal(modal);
+      return;
+    }
   }
 
   // -----------------------------------
-  // Modal submit for applications & reports
+  // Modal submit for applications, reports, and requests
   // -----------------------------------
   if (interaction.isModalSubmit()) {
     // ----- Application modals -----
@@ -1474,6 +1608,60 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return interaction.reply({
         content: `✅ Your **${reportTitle}** has been submitted.`,
+        ephemeral: true
+      });
+    }
+
+    // ----- Role Request modal -----
+    if (interaction.customId === 'role_request_modal') {
+      const name = interaction.fields.getTextInputValue('role_name');
+      const rolesNeeded = interaction.fields.getTextInputValue('role_roles_needed');
+      const approvedBy = interaction.fields.getTextInputValue('role_approved_by') || 'N/A';
+
+      const embed = new EmbedBuilder()
+        .setTitle('Role Request')
+        .setColor(0x22c55e)
+        .addFields(
+          { name: 'Requested By', value: `<@${interaction.user.id}> (${interaction.user.id})`, inline: false },
+          { name: 'Name', value: name || 'N/A', inline: false },
+          { name: 'Roles needed', value: rolesNeeded || 'N/A', inline: false },
+          { name: 'Approved by', value: approvedBy, inline: false }
+        )
+        .setTimestamp(new Date());
+
+      await interaction.channel.send({ embeds: [embed] });
+
+      return interaction.reply({
+        content: '✅ Your role request has been submitted.',
+        ephemeral: true
+      });
+    }
+
+    // ----- Roster Request modal -----
+    if (interaction.customId === 'roster_request_modal') {
+      const template = interaction.fields.getTextInputValue('rost_template');
+      const name = interaction.fields.getTextInputValue('rost_name');
+      const discordId = interaction.fields.getTextInputValue('rost_discord_id');
+      const timeZone = interaction.fields.getTextInputValue('rost_time_zone');
+      const requestText = interaction.fields.getTextInputValue('rost_request');
+
+      const embed = new EmbedBuilder()
+        .setTitle('Roster Request')
+        .setColor(0x6366f1)
+        .addFields(
+          { name: 'Requested By', value: `<@${interaction.user.id}> (${interaction.user.id})`, inline: false },
+          { name: 'Template', value: template || 'N/A', inline: true },
+          { name: 'Name (In-Game)', value: name || 'N/A', inline: true },
+          { name: 'Discord ID', value: discordId || 'N/A', inline: false },
+          { name: 'Time Zone', value: timeZone || 'N/A', inline: false },
+          { name: 'Roster Request', value: requestText || 'N/A', inline: false }
+        )
+        .setTimestamp(new Date());
+
+      await interaction.channel.send({ embeds: [embed] });
+
+      return interaction.reply({
+        content: '✅ Your roster request has been submitted.',
         ephemeral: true
       });
     }
