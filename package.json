@@ -1,7 +1,7 @@
 {
   "name": "salea-management-bot",
-  "version": "1.0.0",
-  "description": "SALEA management bot with applications, tickets, clock-in, reports, requests, and admin dashboard.",
+  "version": "1.1.0",
+  "description": "SALEA management bot with dynamic config, admin dashboard, tickets, reports, requests, and duty management.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,6 +11,6 @@
   "dependencies": {
     "discord.js": "^14.16.3",
     "express": "^4.19.2",
-    "express-basic-auth": "^1.2.1"
+    "express-session": "^1.17.3"
   }
 }
