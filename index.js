@@ -21,7 +21,7 @@ const {
 } = require('discord.js');
 
 const express = require('express');
-const basicAuth = require('express-basic-auth');
+const session = require('express-session');
 
 const {
   addApplication,
@@ -29,12 +29,21 @@ const {
   getLatestApplicationForUser,
   addTicket,
   closeTicket,
+  listTickets,
   clockIn,
   clockOut,
   getOpenSession,
   getAllOpenSessions,
   getSessionsForUserInRange,
-  getSessionsInRange
+  getSessionsInRange,
+  addReport,
+  listReports,
+  addRoleRequest,
+  listRoleRequests,
+  addRosterRequest,
+  listRosterRequests,
+  getSettings,
+  saveSettings
 } = require('./storage');
 
 const config = require('./config.json');
@@ -44,15 +53,21 @@ const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 
+// OAuth for admin panel
+const OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID || CLIENT_ID;
+const OAUTH_CLIENT_SECRET = process.env.DISCORD_OAUTH_CLIENT_SECRET || '';
+const OAUTH_REDIRECT_URI = process.env.DISCORD_OAUTH_REDIRECT_URI || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change_this_secret';
+
 if (!BOT_TOKEN) {
   console.error('❌ DISCORD_TOKEN is not set. Set it in Render (or your .env).');
   process.exit(1);
 }
 if (!CLIENT_ID) {
-  console.error('❌ DISCORD_CLIENT_ID is not set.');
+  console.error('❌ DISCORD_CLIENT_ID is not set (bot client ID).');
 }
 if (!GUILD_ID) {
-  console.error('❌ DISCORD_GUILD_ID is not set.');
+  console.error('❌ DISCORD_GUILD_ID is not set (your server ID).');
 }
 
 const client = new Client({
@@ -64,7 +79,6 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// In-memory message ID for duty board
 let dutyBoardMessageId = null;
 
 // ---------------------------
@@ -107,12 +121,17 @@ function hasAnyRole(member, roleIds) {
 // ---------------------------
 
 async function updateDutyBoard(guild) {
-  const channelId = config.channels.clockStatusChannelId;
-  if (!channelId) return;
+  const settings = getSettings();
+  const clockStatusChannelId =
+    settings.logs && settings.logs.clockStatusChannelId
+      ? settings.logs.clockStatusChannelId
+      : config.channels.clockStatusChannelId;
 
-  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!clockStatusChannelId) return;
+
+  const channel = await guild.channels.fetch(clockStatusChannelId).catch(() => null);
   if (!channel || !channel.isTextBased()) {
-    console.warn('[DutyBoard] Channel not found or not text based for ID:', channelId);
+    console.warn('[DutyBoard] Channel not found or not text based for ID:', clockStatusChannelId);
     return;
   }
 
@@ -425,6 +444,8 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
+    const settings = getSettings();
+
     // ----------------- /setup-app-panel -----------------
     if (commandName === 'setup-app-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -484,13 +505,26 @@ client.on(Events.InteractionCreate, async interaction => {
         )
         .setColor(0x00aeff);
 
-      const channel = config.applicationPanel.channelId
-        ? await interaction.guild.channels.fetch(config.applicationPanel.channelId)
-        : interaction.channel;
+      const panelChannelId =
+        (settings.panels && settings.panels.appPanelChannelId) ||
+        (config.applicationPanel && config.applicationPanel.channelId) ||
+        interaction.channel.id;
 
-      await channel.send({ embeds: [embed], components: [row, row2] });
+      const channel = await interaction.guild.channels.fetch(panelChannelId).catch(() => null);
+      const finalChannel = channel && channel.isTextBased() ? channel : interaction.channel;
+
+      await finalChannel.send({ embeds: [embed], components: [row, row2] });
+
+      // Save where we posted the panel
+      saveSettings({
+        panels: {
+          ...(settings.panels || {}),
+          appPanelChannelId: finalChannel.id
+        }
+      });
+
       return interaction.reply({
-        content: '✅ Application panel posted.',
+        content: `✅ Application panel posted in <#${finalChannel.id}>.`,
         ephemeral: true
       });
     }
@@ -545,15 +579,26 @@ client.on(Events.InteractionCreate, async interaction => {
           embed.setFooter({ text: `Application ID: ${appRecord.id}` });
         }
 
-        try {
-          const channel = await interaction.client.channels.fetch(
-            config.channels.applicationsChannelId
-          );
-          if (channel && channel.isTextBased()) {
-            await channel.send({ embeds: [embed] });
+        const appLogChannelId =
+          (settings.logs && settings.logs.applicationsLogChannelId) ||
+          (config.channels && config.channels.applicationsChannelId);
+
+        if (appLogChannelId) {
+          try {
+            const channel = await interaction.client.channels.fetch(appLogChannelId);
+            if (channel && channel.isTextBased()) {
+              const pingRoles = (settings.pings && settings.pings.applicationPingRoles) || [];
+              const pingText = pingRoles.length
+                ? pingRoles.map(id => `<@&${id}>`).join(' ')
+                : null;
+              await channel.send({
+                content: pingText || null,
+                embeds: [embed]
+              });
+            }
+          } catch (err) {
+            console.error('Error logging application approval:', err);
           }
-        } catch (err) {
-          console.error('Error logging application approval:', err);
         }
 
         return interaction.reply({
@@ -592,15 +637,26 @@ client.on(Events.InteractionCreate, async interaction => {
           embed.setFooter({ text: `Application ID: ${appRecord.id}` });
         }
 
-        try {
-          const channel = await interaction.client.channels.fetch(
-            config.channels.applicationsChannelId
-          );
-          if (channel && channel.isTextBased()) {
-            await channel.send({ embeds: [embed] });
+        const appLogChannelId =
+          (settings.logs && settings.logs.applicationsLogChannelId) ||
+          (config.channels && config.channels.applicationsChannelId);
+
+        if (appLogChannelId) {
+          try {
+            const channel = await interaction.client.channels.fetch(appLogChannelId);
+            if (channel && channel.isTextBased()) {
+              const pingRoles = (settings.pings && settings.pings.applicationPingRoles) || [];
+              const pingText = pingRoles.length
+                ? pingRoles.map(id => `<@&${id}>`).join(' ')
+                : null;
+              await channel.send({
+                content: pingText || null,
+                embeds: [embed]
+              });
+            }
+          } catch (err) {
+            console.error('Error logging application denial:', err);
           }
-        } catch (err) {
-          console.error('Error logging application denial:', err);
         }
 
         return interaction.reply({
@@ -687,6 +743,7 @@ client.on(Events.InteractionCreate, async interaction => {
         });
 
         addTicket({
+          id: `${interaction.id}`,
           channelId: ticketChannel.id,
           userId: interaction.user.id,
           type,
@@ -750,33 +807,46 @@ client.on(Events.InteractionCreate, async interaction => {
         const buffer = Buffer.from(transcriptText, 'utf8');
         const attachment = new AttachmentBuilder(buffer, { name: `ticket-${channel.id}.txt` });
 
-        try {
-          const logChannel = await interaction.client.channels.fetch(
-            config.channels.ticketTranscriptChannelId
-          );
-          if (logChannel && logChannel.isTextBased()) {
-            const embed = new EmbedBuilder()
-              .setTitle('Ticket Closed')
-              .setColor(0xffa500)
-              .addFields(
-                { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
-                {
-                  name: 'Closed By',
-                  value: `<@${interaction.user.id}>`,
-                  inline: true
-                },
-                {
-                  name: 'Original User',
-                  value: ticket ? `<@${ticket.userId}>` : 'Unknown',
-                  inline: true
-                }
-              )
-              .setTimestamp(new Date());
+        const transcriptChannelId =
+          (settings.logs && settings.logs.ticketTranscriptChannelId) ||
+          (config.channels && config.channels.ticketTranscriptChannelId);
 
-            await logChannel.send({ embeds: [embed], files: [attachment] });
+        if (transcriptChannelId) {
+          try {
+            const logChannel = await interaction.client.channels.fetch(transcriptChannelId);
+            if (logChannel && logChannel.isTextBased()) {
+              const embed = new EmbedBuilder()
+                .setTitle('Ticket Closed')
+                .setColor(0xffa500)
+                .addFields(
+                  { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
+                  {
+                    name: 'Closed By',
+                    value: `<@${interaction.user.id}>`,
+                    inline: true
+                  },
+                  {
+                    name: 'Original User',
+                    value: ticket ? `<@${ticket.userId}>` : 'Unknown',
+                    inline: true
+                  }
+                )
+                .setTimestamp(new Date());
+
+              const pingRoles = (settings.pings && settings.pings.ticketPingRoles) || [];
+              const pingText = pingRoles.length
+                ? pingRoles.map(id => `<@&${id}>`).join(' ')
+                : null;
+
+              await logChannel.send({
+                content: pingText || null,
+                embeds: [embed],
+                files: [attachment]
+              });
+            }
+          } catch (err) {
+            console.error('Error sending ticket transcript:', err);
           }
-        } catch (err) {
-          console.error('Error sending ticket transcript:', err);
         }
 
         await interaction.reply('✅ Closing this ticket in 5 seconds...');
@@ -845,9 +915,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const duration = session.clockOut - session.clockIn;
 
-        const onDutyRoleId2 = config.roles.onDutyRoleId || null;
-        if (onDutyRoleId2 && member.roles.cache.has(onDutyRoleId2)) {
-          await member.roles.remove(onDutyRoleId2).catch(() => {});
+        if (onDutyRoleId && member.roles.cache.has(onDutyRoleId)) {
+          await member.roles.remove(onDutyRoleId).catch(() => {});
         }
 
         const guild = interaction.guild;
@@ -983,6 +1052,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // ----------------- /setup-ticket-panel -----------------
     if (commandName === 'setup-ticket-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
+      const settingsNow = getSettings();
 
       if (
         !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
@@ -1021,13 +1091,27 @@ client.on(Events.InteractionCreate, async interaction => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      await interaction.channel.send({
+      const panelChannelId =
+        (settingsNow.panels && settingsNow.panels.ticketPanelChannelId) ||
+        interaction.channel.id;
+
+      const channel = await interaction.guild.channels.fetch(panelChannelId).catch(() => null);
+      const finalChannel = channel && channel.isTextBased() ? channel : interaction.channel;
+
+      await finalChannel.send({
         embeds: [ticketEmbed],
         components: [row1]
       });
 
+      saveSettings({
+        panels: {
+          ...(settingsNow.panels || {}),
+          ticketPanelChannelId: finalChannel.id
+        }
+      });
+
       return interaction.reply({
-        content: '✅ Ticket panel posted.',
+        content: `✅ Ticket panel posted in <#${finalChannel.id}>.`,
         ephemeral: true
       });
     }
@@ -1035,6 +1119,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // ----------------- /setup-report-panel -----------------
     if (commandName === 'setup-report-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
+      const settingsNow = getSettings();
 
       if (
         !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
@@ -1088,13 +1173,27 @@ client.on(Events.InteractionCreate, async interaction => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      await interaction.channel.send({
+      const panelChannelId =
+        (settingsNow.panels && settingsNow.panels.reportPanelChannelId) ||
+        interaction.channel.id;
+
+      const channel = await interaction.guild.channels.fetch(panelChannelId).catch(() => null);
+      const finalChannel = channel && channel.isTextBased() ? channel : interaction.channel;
+
+      await finalChannel.send({
         embeds: [reportEmbed],
         components: [row1, row2]
       });
 
+      saveSettings({
+        panels: {
+          ...(settingsNow.panels || {}),
+          reportPanelChannelId: finalChannel.id
+        }
+      });
+
       return interaction.reply({
-        content: '✅ Report panel posted.',
+        content: `✅ Report panel posted in <#${finalChannel.id}>.`,
         ephemeral: true
       });
     }
@@ -1102,6 +1201,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // ----------------- /setup-request-panel -----------------
     if (commandName === 'setup-request-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
+      const settingsNow = getSettings();
 
       if (
         !member.permissions.has(PermissionFlagsBits.ManageChannels) &&
@@ -1119,7 +1219,7 @@ client.on(Events.InteractionCreate, async interaction => {
           'Use the buttons below to submit a request.\n\n' +
           '**Role Request** – ask for roles to be added/changed.\n' +
           '**Roster Request** – request roster updates for members.\n\n' +
-          'All requests will be logged in this channel so Command can review and check them off.'
+          'All requests will be logged for Command to review and check off.'
         )
         .setColor(0x3b82f6);
 
@@ -1134,13 +1234,27 @@ client.on(Events.InteractionCreate, async interaction => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      await interaction.channel.send({
+      const panelChannelId =
+        (settingsNow.panels && settingsNow.panels.requestPanelChannelId) ||
+        interaction.channel.id;
+
+      const channel = await interaction.guild.channels.fetch(panelChannelId).catch(() => null);
+      const finalChannel = channel && channel.isTextBased() ? channel : interaction.channel;
+
+      await finalChannel.send({
         embeds: [embed],
         components: [row]
       });
 
+      saveSettings({
+        panels: {
+          ...(settingsNow.panels || {}),
+          requestPanelChannelId: finalChannel.id
+        }
+      });
+
       return interaction.reply({
-        content: '✅ Request panel posted.',
+        content: `✅ Request panel posted in <#${finalChannel.id}>.`,
         ephemeral: true
       });
     }
@@ -1151,6 +1265,7 @@ client.on(Events.InteractionCreate, async interaction => {
   // -----------------------------------
   if (interaction.isButton()) {
     const id = interaction.customId;
+    const settings = getSettings();
 
     // ----- Application buttons -----
     if (id.startsWith('apply_')) {
@@ -1294,6 +1409,7 @@ client.on(Events.InteractionCreate, async interaction => {
       });
 
       addTicket({
+        id: `${interaction.id}`,
         channelId: ticketChannel.id,
         userId: interaction.user.id,
         type,
@@ -1463,6 +1579,8 @@ client.on(Events.InteractionCreate, async interaction => {
   // Modal submit for applications, reports, and requests
   // -----------------------------------
   if (interaction.isModalSubmit()) {
+    const settings = getSettings();
+
     // ----- Application modals -----
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
@@ -1518,18 +1636,25 @@ client.on(Events.InteractionCreate, async interaction => {
         .setFooter({ text: `Application ID: ${app.id}` })
         .setTimestamp(new Date(app.createdAt));
 
-      try {
-        const channel = await interaction.client.channels.fetch(
-          config.channels.applicationsChannelId
-        );
-        if (channel && channel.isTextBased()) {
-          const content = config.roles.hrRoleId
-            ? `<@&${config.roles.hrRoleId}> New application received.`
-            : 'New application received.';
-          await channel.send({ content, embeds: [embed] });
+      const appLogChannelId =
+        (settings.logs && settings.logs.applicationsLogChannelId) ||
+        (config.channels && config.channels.applicationsChannelId);
+
+      if (appLogChannelId) {
+        try {
+          const channel = await interaction.client.channels.fetch(
+            appLogChannelId
+          );
+          if (channel && channel.isTextBased()) {
+            const pingRoles = (settings.pings && settings.pings.applicationPingRoles) || [];
+            const pingText = pingRoles.length
+              ? pingRoles.map(id => `<@&${id}>`).join(' ')
+              : null;
+            await channel.send({ content: pingText || null, embeds: [embed] });
+          }
+        } catch (err) {
+          console.error('Error sending application log:', err);
         }
-      } catch (err) {
-        console.error('Error sending application log:', err);
       }
 
       await interaction.reply({
@@ -1549,32 +1674,44 @@ client.on(Events.InteractionCreate, async interaction => {
       const user = interaction.user;
       const guild = interaction.guild;
 
-      const rc = config.reportChannels || {};
+      const rcCfg = config.reportChannels || {};
+      const logsSettings = (settings.logs && settings.logs.reports) || {};
+
       let channelId = null;
       let reportTitle = 'Report';
 
       if (typeKey === 'citation') {
-        channelId = rc.citationLogChannelId;
+        channelId = logsSettings.citationLogChannelId || rcCfg.citationLogChannelId;
         reportTitle = 'Citation Report';
       } else if (typeKey === 'arrest') {
-        channelId = rc.arrestLogChannelId;
+        channelId = logsSettings.arrestLogChannelId || rcCfg.arrestLogChannelId;
         reportTitle = 'Arrest Report';
       } else if (typeKey === 'uof') {
-        channelId = rc.uofLogChannelId;
+        channelId = logsSettings.uofLogChannelId || rcCfg.uofLogChannelId;
         reportTitle = 'Use of Force Report';
       } else if (typeKey === 'reaper_aar') {
-        channelId = rc.reaperAARChannelId;
+        channelId = logsSettings.reaperAARChannelId || rcCfg.reaperAARChannelId;
         reportTitle = 'REAPER After Action Report';
       } else if (typeKey === 'cid_incident') {
-        channelId = rc.cidIncidentLogChannelId;
+        channelId = logsSettings.cidIncidentLogChannelId || rcCfg.cidIncidentLogChannelId;
         reportTitle = 'CID Incident Log';
       } else if (typeKey === 'cid_case') {
-        channelId = rc.cidCaseReportChannelId;
+        channelId = logsSettings.cidCaseReportChannelId || rcCfg.cidCaseReportChannelId;
         reportTitle = 'CID Case Report';
       } else if (typeKey === 'tu_shift') {
-        channelId = rc.tuShiftReportChannelId;
+        channelId = logsSettings.tuShiftReportChannelId || rcCfg.tuShiftReportChannelId;
         reportTitle = 'TU Shift Report';
       }
+
+      const reportData = addReport({
+        id: `${interaction.id}`,
+        type: typeKey,
+        userId: user.id,
+        subject,
+        details,
+        involved,
+        createdAt: Date.now()
+      });
 
       if (!channelId) {
         console.warn(`No report log channel configured for report type '${typeKey}'`);
@@ -1593,12 +1730,21 @@ client.on(Events.InteractionCreate, async interaction => {
           { name: 'Details', value: details || 'N/A', inline: false },
           { name: 'Involved', value: involved, inline: false }
         )
-        .setTimestamp(new Date());
+        .setFooter({ text: `Report ID: ${reportData.id}` })
+        .setTimestamp(new Date(reportData.createdAt));
 
       try {
         const logChannel = await guild.channels.fetch(channelId);
         if (logChannel && logChannel.isTextBased()) {
-          await logChannel.send({ embeds: [embed] });
+          const pingRoles = (settings.pings && settings.pings.reportPingRoles) || [];
+          const pingText = pingRoles.length
+            ? pingRoles.map(id => `<@&${id}>`).join(' ')
+            : null;
+
+          await logChannel.send({
+            content: pingText || null,
+            embeds: [embed]
+          });
         } else {
           console.warn(`Report log channel not text-based or not found: ${channelId}`);
         }
@@ -1618,6 +1764,15 @@ client.on(Events.InteractionCreate, async interaction => {
       const rolesNeeded = interaction.fields.getTextInputValue('role_roles_needed');
       const approvedBy = interaction.fields.getTextInputValue('role_approved_by') || 'N/A';
 
+      const reqData = addRoleRequest({
+        id: `${interaction.id}`,
+        userId: interaction.user.id,
+        name,
+        rolesNeeded,
+        approvedBy,
+        createdAt: Date.now()
+      });
+
       const embed = new EmbedBuilder()
         .setTitle('Role Request')
         .setColor(0x22c55e)
@@ -1627,9 +1782,30 @@ client.on(Events.InteractionCreate, async interaction => {
           { name: 'Roles needed', value: rolesNeeded || 'N/A', inline: false },
           { name: 'Approved by', value: approvedBy, inline: false }
         )
-        .setTimestamp(new Date());
+        .setFooter({ text: `Request ID: ${reqData.id}` })
+        .setTimestamp(new Date(reqData.createdAt));
 
-      await interaction.channel.send({ embeds: [embed] });
+      const requestsLogChannelId =
+        (settings.logs && settings.logs.requestsLogChannelId) || interaction.channel.id;
+
+      try {
+        const logChannel = await interaction.guild.channels.fetch(requestsLogChannelId);
+        const finalChannel = logChannel && logChannel.isTextBased()
+          ? logChannel
+          : interaction.channel;
+
+        const pingRoles = (settings.pings && settings.pings.requestPingRoles) || [];
+        const pingText = pingRoles.length
+          ? pingRoles.map(id => `<@&${id}>`).join(' ')
+          : null;
+
+        await finalChannel.send({
+          content: pingText || null,
+          embeds: [embed]
+        });
+      } catch (err) {
+        console.error('Error sending role request embed:', err);
+      }
 
       return interaction.reply({
         content: '✅ Your role request has been submitted.',
@@ -1645,6 +1821,17 @@ client.on(Events.InteractionCreate, async interaction => {
       const timeZone = interaction.fields.getTextInputValue('rost_time_zone');
       const requestText = interaction.fields.getTextInputValue('rost_request');
 
+      const reqData = addRosterRequest({
+        id: `${interaction.id}`,
+        userId: interaction.user.id,
+        template,
+        name,
+        discordId,
+        timeZone,
+        requestText,
+        createdAt: Date.now()
+      });
+
       const embed = new EmbedBuilder()
         .setTitle('Roster Request')
         .setColor(0x6366f1)
@@ -1656,9 +1843,30 @@ client.on(Events.InteractionCreate, async interaction => {
           { name: 'Time Zone', value: timeZone || 'N/A', inline: false },
           { name: 'Roster Request', value: requestText || 'N/A', inline: false }
         )
-        .setTimestamp(new Date());
+        .setFooter({ text: `Request ID: ${reqData.id}` })
+        .setTimestamp(new Date(reqData.createdAt));
 
-      await interaction.channel.send({ embeds: [embed] });
+      const requestsLogChannelId =
+        (settings.logs && settings.logs.requestsLogChannelId) || interaction.channel.id;
+
+      try {
+        const logChannel = await interaction.guild.channels.fetch(requestsLogChannelId);
+        const finalChannel = logChannel && logChannel.isTextBased()
+          ? logChannel
+          : interaction.channel;
+
+        const pingRoles = (settings.pings && settings.pings.requestPingRoles) || [];
+        const pingText = pingRoles.length
+          ? pingRoles.map(id => `<@&${id}>`).join(' ')
+          : null;
+
+        await finalChannel.send({
+          content: pingText || null,
+          embeds: [embed]
+        });
+      } catch (err) {
+        console.error('Error sending roster request embed:', err);
+      }
 
       return interaction.reply({
         content: '✅ Your roster request has been submitted.',
@@ -1669,125 +1877,639 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 // ---------------------------
-// Admin dashboard (Express)
+// Admin dashboard (Express + Discord OAuth)
 // ---------------------------
 
 const app = express();
-
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'password';
-
+app.use(express.json());
 app.use(
-  '/admin',
-  basicAuth({
-    users: { [ADMIN_USER]: ADMIN_PASS },
-    challenge: true
+  session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false
   })
 );
 
-app.get('/admin', (req, res) => {
+// --------- OAuth helpers ---------
+
+function buildDiscordOAuthUrl() {
+  const params = new URLSearchParams({
+    client_id: OAUTH_CLIENT_ID,
+    redirect_uri: OAUTH_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'identify guilds'
+  });
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+// --------- Discord admin guard ---------
+
+async function discordAdminGuard(req, res, next) {
+  if (!req.session || !req.session.user) {
+    return res.redirect('/auth/discord');
+  }
+
+  const settings = getSettings();
+  const adminRoleIds = settings.adminRoleIds || [];
+
+  if (!GUILD_ID) {
+    return res.status(500).send('GUILD_ID not configured.');
+  }
+
   try {
-    const cfg = config || {};
-    const roles = cfg.roles || {};
-    const channels = cfg.channels || {};
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const member = await guild.members.fetch(req.session.user.id).catch(() => null);
 
-    const openSessions = getAllOpenSessions ? getAllOpenSessions() : [];
+    if (!member) {
+      return res.status(403).send('You are not a member of this guild.');
+    }
 
-    const now = Date.now();
-    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
-    const recentSessions = getSessionsInRange ? getSessionsInRange(sevenDaysAgo, null) : [];
-    const totalMs = recentSessions.reduce((acc, s) => acc + (s.clockOut - s.clockIn), 0);
+    if (adminRoleIds.length === 0) {
+      // If no admin roles configured yet, allow any guild member with ManageGuild as "bootstrap"
+      if (member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        return next();
+      }
+      return res.status(403).send('Admin roles not configured; only server managers can access.');
+    }
 
-    const formatMs = ms => {
-      const totalSec = Math.floor(ms / 1000);
-      const h = Math.floor(totalSec / 3600);
-      const m = Math.floor((totalSec % 3600) / 60);
-      const parts = [];
-      if (h) parts.push(`${h}h`);
-      if (m) parts.push(`${m}m`);
-      return parts.length ? parts.join(' ') : '0m';
+    const hasAdminRole = adminRoleIds.some(id => member.roles.cache.has(id));
+    if (!hasAdminRole) {
+      return res.status(403).send('You do not have access to this panel.');
+    }
+
+    next();
+  } catch (err) {
+    console.error('Error in admin guard:', err);
+    return res.status(500).send('Internal error in admin guard.');
+  }
+}
+
+// --------- OAuth routes ---------
+
+app.get('/auth/discord', (req, res) => {
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET || !OAUTH_REDIRECT_URI) {
+    return res.status(500).send('OAuth not configured. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET, DISCORD_OAUTH_REDIRECT_URI.');
+  }
+  const url = buildDiscordOAuthUrl();
+  res.redirect(url);
+});
+
+app.get('/auth/discord/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) {
+    return res.status(400).send('Missing code.');
+  }
+  try {
+    const params = new URLSearchParams({
+      client_id: OAUTH_CLIENT_ID,
+      client_secret: OAUTH_CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: OAUTH_REDIRECT_URI
+    });
+
+    const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      body: params,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    if (!tokenRes.ok) {
+      const txt = await tokenRes.text();
+      console.error('OAuth token error:', txt);
+      return res.status(500).send('OAuth token exchange failed.');
+    }
+
+    const tokenData = await tokenRes.json();
+    const accessToken = tokenData.access_token;
+
+    const userRes = await fetch('https://discord.com/api/users/@me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    if (!userRes.ok) {
+      const txt = await userRes.text();
+      console.error('OAuth user info error:', txt);
+      return res.status(500).send('OAuth user info failed.');
+    }
+
+    const userData = await userRes.json();
+
+    req.session.user = {
+      id: userData.id,
+      username: userData.username,
+      discriminator: userData.discriminator
     };
 
-    const html = `
+    res.redirect('/admin');
+  } catch (err) {
+    console.error('Error in OAuth callback:', err);
+    res.status(500).send('OAuth callback error.');
+  }
+});
+
+// --------- Admin API: meta + settings + data ---------
+
+app.get('/admin/api/meta', discordAdminGuard, async (req, res) => {
+  try {
+    if (!GUILD_ID) {
+      return res.status(500).json({ error: 'GUILD_ID not configured.' });
+    }
+
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const channelsCollection = await guild.channels.fetch();
+    const rolesCollection = await guild.roles.fetch();
+
+    const channels = channelsCollection
+      .filter(ch => ch && (ch.type === ChannelType.GuildText))
+      .map(ch => ({
+        id: ch.id,
+        name: `#${ch.name}`
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const roles = rolesCollection
+      .filter(r => r && !r.managed)
+      .map(r => ({
+        id: r.id,
+        name: r.name
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const settings = getSettings();
+
+    const tickets = listTickets();
+    const reports = listReports();
+    const roleRequests = listRoleRequests();
+    const rosterRequests = listRosterRequests();
+
+    res.json({
+      guild: {
+        id: guild.id,
+        name: guild.name
+      },
+      user: req.session.user,
+      channels,
+      roles,
+      settings,
+      data: {
+        tickets,
+        reports,
+        roleRequests,
+        rosterRequests
+      }
+    });
+  } catch (err) {
+    console.error('Error in /admin/api/meta:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+app.post('/admin/api/settings', discordAdminGuard, (req, res) => {
+  try {
+    const incoming = req.body || {};
+    const saved = saveSettings(incoming);
+    res.json({ ok: true, settings: saved });
+  } catch (err) {
+    console.error('Error in /admin/api/settings:', err);
+    res.status(500).json({ error: 'Failed to save settings.' });
+  }
+});
+
+// --------- Admin UI ---------
+
+app.get('/admin', discordAdminGuard, (req, res) => {
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>SALEA Admin Dashboard</title>
+  <title>SALEA Admin Panel</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e5e7eb; padding: 20px; }
-    h1 { color: #fbbf24; }
-    h2 { margin-top: 24px; color: #93c5fd; }
-    .card { background: #020617; border-radius: 12px; padding: 16px; margin-top: 12px; border: 1px solid #1f2937; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border-bottom: 1px solid #1f2937; padding: 6px 8px; text-align: left; font-size: 14px; }
+    body { font-family: system-ui, sans-serif; background: #020617; color: #e5e7eb; margin: 0; }
+    header { background: #0f172a; padding: 16px 24px; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
+    h1 { font-size: 20px; margin: 0; color: #fbbf24; }
+    main { padding: 20px; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr); gap: 16px; }
+    .card { background: #020617; border-radius: 12px; padding: 16px; border: 1px solid #1f2937; margin-bottom: 12px; }
+    h2 { margin: 0 0 8px 0; font-size: 16px; color: #93c5fd; }
+    label { display: block; margin-top: 8px; font-size: 13px; color: #9ca3af; }
+    select, button { margin-top: 4px; background: #020617; color: #e5e7eb; border-radius: 6px; border: 1px solid #374151; padding: 6px 8px; font-size: 13px; width: 100%; }
+    button { cursor: pointer; background: #fbbf24; color: #111827; border-color: #f59e0b; font-weight: 600; }
+    button:hover { background: #f59e0b; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 4px 6px; text-align: left; }
     th { color: #9ca3af; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
     code { background: #111827; padding: 2px 4px; border-radius: 4px; }
+    .pill { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 11px; background: #111827; color: #e5e7eb; }
+    .pill.report { background: #7c3aed; }
+    .pill.ticket { background: #2563eb; }
+    .pill.request { background: #059669; }
+    .section-title { font-size: 13px; font-weight: 600; margin-top: 8px; color: #e5e7eb; }
+    .flex-row { display: flex; gap: 8px; }
+    .flex-1 { flex: 1; }
   </style>
 </head>
 <body>
-  <h1>SALEA Admin Dashboard</h1>
-  <p>Logged in as <strong>${req.auth?.user || 'unknown'}</strong></p>
+  <header>
+    <div>
+      <h1>SALEA Admin Panel</h1>
+      <div id="guildInfo" style="font-size:12px;color:#9ca3af;"></div>
+    </div>
+    <div id="userInfo" style="font-size:12px;color:#9ca3af;"></div>
+  </header>
 
-  <div class="card">
-    <h2>Duty Overview (last 7 days)</h2>
-    <p>Total completed sessions: <strong>${recentSessions.length}</strong></p>
-    <p>Total duty time: <strong>${formatMs(totalMs)}</strong></p>
-  </div>
+  <main>
+    <section>
+      <div class="card">
+        <h2>Routing Configuration</h2>
+        <div class="section-title">Panels</div>
+        <label>Applications Panel Channel
+          <select id="panel_app"></select>
+        </label>
+        <label>Tickets Panel Channel
+          <select id="panel_ticket"></select>
+        </label>
+        <label>Reports Panel Channel
+          <select id="panel_report"></select>
+        </label>
+        <label>Requests Panel Channel
+          <select id="panel_request"></select>
+        </label>
 
-  <div class="card">
-    <h2>On Duty Now</h2>
-    ${
-      openSessions.length === 0
-        ? '<p>No one is currently clocked in.</p>'
-        : `
+        <div class="section-title" style="margin-top:12px;">Logs</div>
+        <label>Applications Log Channel
+          <select id="log_applications"></select>
+        </label>
+        <label>Ticket Transcript Channel
+          <select id="log_tickets"></select>
+        </label>
+        <label>Requests Log Channel
+          <select id="log_requests"></select>
+        </label>
+
+        <div class="flex-row">
+          <div class="flex-1">
+            <label>Citation Log Channel
+              <select id="log_rep_citation"></select>
+            </label>
+          </div>
+          <div class="flex-1">
+            <label>Arrest Log Channel
+              <select id="log_rep_arrest"></select>
+            </label>
+          </div>
+        </div>
+        <div class="flex-row">
+          <div class="flex-1">
+            <label>Use of Force Log Channel
+              <select id="log_rep_uof"></select>
+            </label>
+          </div>
+          <div class="flex-1">
+            <label>REAPER AAR Log Channel
+              <select id="log_rep_reaper"></select>
+            </label>
+          </div>
+        </div>
+        <div class="flex-row">
+          <div class="flex-1">
+            <label>CID Incident Log Channel
+              <select id="log_rep_cid_incident"></select>
+            </label>
+          </div>
+          <div class="flex-1">
+            <label>CID Case Report Channel
+              <select id="log_rep_cid_case"></select>
+            </label>
+          </div>
+        </div>
+        <label>TU Shift Report Channel
+          <select id="log_rep_tu_shift"></select>
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>Pings & Admin Roles</h2>
+        <label>Roles to ping on Applications
+          <select id="ping_applications" multiple size="4"></select>
+        </label>
+        <label>Roles to ping on Tickets
+          <select id="ping_tickets" multiple size="4"></select>
+        </label>
+        <label>Roles to ping on Reports
+          <select id="ping_reports" multiple size="4"></select>
+        </label>
+        <label>Roles to ping on Requests
+          <select id="ping_requests" multiple size="4"></select>
+        </label>
+        <label>Admin Roles (can access this panel)
+          <select id="admin_roles" multiple size="6"></select>
+        </label>
+
+        <button id="saveBtn" style="margin-top:12px;">Save Settings</button>
+        <div id="saveStatus" style="font-size:12px;color:#a3e635;margin-top:6px;"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <h2>Tickets</h2>
+        <div id="ticketsTable"></div>
+      </div>
+      <div class="card">
+        <h2>Reports</h2>
+        <div id="reportsTable"></div>
+      </div>
+      <div class="card">
+        <h2>Requests</h2>
+        <div id="requestsTable"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function fetchMeta() {
+      const res = await fetch('/admin/api/meta');
+      if (!res.ok) {
+        throw new Error('Failed to load meta');
+      }
+      return await res.json();
+    }
+
+    function fillSelect(select, items, allowEmpty, currentValue) {
+      select.innerHTML = '';
+      if (allowEmpty) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '-- none --';
+        select.appendChild(opt);
+      }
+      items.forEach(it => {
+        const opt = document.createElement('option');
+        opt.value = it.id;
+        opt.textContent = it.name;
+        if (currentValue && it.id === currentValue) {
+          opt.selected = true;
+        }
+        select.appendChild(opt);
+      });
+    }
+
+    function setMultiSelect(select, ids) {
+      const set = new Set(ids || []);
+      for (const opt of select.options) {
+        opt.selected = set.has(opt.value);
+      }
+    }
+
+    function getMultiSelect(select) {
+      const values = [];
+      for (const opt of select.options) {
+        if (opt.selected && opt.value) {
+          values.push(opt.value);
+        }
+      }
+      return values;
+    }
+
+    function renderTickets(container, tickets) {
+      if (!tickets || tickets.length === 0) {
+        container.innerHTML = '<p style="font-size:12px;color:#9ca3af;">No tickets recorded yet.</p>';
+        return;
+      }
+      const rows = tickets
+        .slice()
+        .sort((a,b) => b.createdAt - a.createdAt)
+        .slice(0, 25)
+        .map(t => {
+          const created = new Date(t.createdAt).toLocaleString();
+          const closed = t.closedAt ? new Date(t.closedAt).toLocaleString() : 'Open';
+          return \`<tr>
+            <td><span class="pill ticket">\${t.type}</span></td>
+            <td><code>\${t.userId}</code></td>
+            <td>\${t.subject || ''}</td>
+            <td>\${created}</td>
+            <td>\${closed}</td>
+          </tr>\`;
+        }).join('');
+      container.innerHTML = \`
         <table>
           <thead>
             <tr>
+              <th>Type</th>
               <th>User</th>
-              <th>Assignments</th>
-              <th>Started</th>
-              <th>Elapsed</th>
+              <th>Subject</th>
+              <th>Created</th>
+              <th>Status</th>
             </tr>
           </thead>
-          <tbody>
-            ${openSessions
-              .map(s => {
-                const assignments = Array.isArray(s.assignments)
-                  ? s.assignments
-                  : [];
-                const started = new Date(s.clockIn);
-                const elapsed = formatMs(Date.now() - s.clockIn);
-                return `
-                  <tr>
-                    <td><code>${s.userId}</code></td>
-                    <td>${assignments.join(', ') || 'Unspecified'}</td>
-                    <td>${started.toISOString()}</td>
-                    <td>${elapsed}</td>
-                  </tr>
-                `;
-              })
-              .join('')}
-          </tbody>
+          <tbody>\${rows}</tbody>
         </table>
-      `
+      \`;
     }
-  </div>
 
-  <div class="card">
-    <h2>Config Snapshot</h2>
-    <p><strong>Roles object keys:</strong> ${Object.keys(roles).join(', ') || 'none'}</p>
-    <p><strong>Channels object keys:</strong> ${Object.keys(channels).join(', ') || 'none'}</p>
-  </div>
+    function renderReports(container, reports) {
+      if (!reports || reports.length === 0) {
+        container.innerHTML = '<p style="font-size:12px;color:#9ca3af;">No reports recorded yet.</p>';
+        return;
+      }
+      const rows = reports
+        .slice()
+        .sort((a,b) => b.createdAt - a.createdAt)
+        .slice(0, 25)
+        .map(r => {
+          const created = new Date(r.createdAt).toLocaleString();
+          return \`<tr>
+            <td><span class="pill report">\${r.type}</span></td>
+            <td><code>\${r.userId}</code></td>
+            <td>\${r.subject || ''}</td>
+            <td>\${created}</td>
+          </tr>\`;
+        }).join('');
+      container.innerHTML = \`
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>User</th>
+              <th>Subject</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>\${rows}</tbody>
+        </table>
+      \`;
+    }
+
+    function renderRequests(container, roleRequests, rosterRequests) {
+      const items = [];
+      (roleRequests || []).forEach(r => {
+        items.push({
+          kind: 'role',
+          id: r.id,
+          userId: r.userId,
+          title: r.name || '',
+          extra: r.rolesNeeded || '',
+          createdAt: r.createdAt
+        });
+      });
+      (rosterRequests || []).forEach(r => {
+        items.push({
+          kind: 'roster',
+          id: r.id,
+          userId: r.userId,
+          title: r.name || '',
+          extra: r.requestText || '',
+          createdAt: r.createdAt
+        });
+      });
+      if (items.length === 0) {
+        container.innerHTML = '<p style="font-size:12px;color:#9ca3af;">No requests recorded yet.</p>';
+        return;
+      }
+      items.sort((a,b) => b.createdAt - a.createdAt);
+      const rows = items.slice(0,25).map(it => {
+        const created = new Date(it.createdAt).toLocaleString();
+        const pillClass = it.kind === 'role' ? 'request' : 'request';
+        const pillLabel = it.kind === 'role' ? 'Role' : 'Roster';
+        return \`<tr>
+          <td><span class="pill \${pillClass}">\${pillLabel}</span></td>
+          <td><code>\${it.userId}</code></td>
+          <td>\${it.title}</td>
+          <td>\${it.extra}</td>
+          <td>\${created}</td>
+        </tr>\`;
+      }).join('');
+      container.innerHTML = \`
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>User</th>
+              <th>Title</th>
+              <th>Details</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>\${rows}</tbody>
+        </table>
+      \`;
+    }
+
+    async function init() {
+      try {
+        const meta = await fetchMeta();
+
+        const channels = meta.channels || [];
+        const roles = meta.roles || [];
+        const settings = meta.settings || {};
+        const logs = settings.logs || {};
+        const panels = settings.panels || {};
+        const pings = settings.pings || {};
+
+        document.getElementById('guildInfo').textContent =
+          meta.guild ? \`\${meta.guild.name} (\${meta.guild.id})\` : '';
+        document.getElementById('userInfo').textContent =
+          meta.user ? \`Logged in as \${meta.user.username}#\${meta.user.discriminator}\` : '';
+
+        fillSelect(document.getElementById('panel_app'), channels, true, panels.appPanelChannelId);
+        fillSelect(document.getElementById('panel_ticket'), channels, true, panels.ticketPanelChannelId);
+        fillSelect(document.getElementById('panel_report'), channels, true, panels.reportPanelChannelId);
+        fillSelect(document.getElementById('panel_request'), channels, true, panels.requestPanelChannelId);
+
+        fillSelect(document.getElementById('log_applications'), channels, true, logs.applicationsLogChannelId);
+        fillSelect(document.getElementById('log_tickets'), channels, true, logs.ticketTranscriptChannelId);
+        fillSelect(document.getElementById('log_requests'), channels, true, logs.requestsLogChannelId);
+
+        const repLogs = logs.reports || {};
+        fillSelect(document.getElementById('log_rep_citation'), channels, true, repLogs.citationLogChannelId);
+        fillSelect(document.getElementById('log_rep_arrest'), channels, true, repLogs.arrestLogChannelId);
+        fillSelect(document.getElementById('log_rep_uof'), channels, true, repLogs.uofLogChannelId);
+        fillSelect(document.getElementById('log_rep_reaper'), channels, true, repLogs.reaperAARChannelId);
+        fillSelect(document.getElementById('log_rep_cid_incident'), channels, true, repLogs.cidIncidentLogChannelId);
+        fillSelect(document.getElementById('log_rep_cid_case'), channels, true, repLogs.cidCaseReportChannelId);
+        fillSelect(document.getElementById('log_rep_tu_shift'), channels, true, repLogs.tuShiftReportChannelId);
+
+        fillSelect(document.getElementById('ping_applications'), roles, false, null);
+        fillSelect(document.getElementById('ping_tickets'), roles, false, null);
+        fillSelect(document.getElementById('ping_reports'), roles, false, null);
+        fillSelect(document.getElementById('ping_requests'), roles, false, null);
+        fillSelect(document.getElementById('admin_roles'), roles, false, null);
+
+        setMultiSelect(document.getElementById('ping_applications'), pings.applicationPingRoles || []);
+        setMultiSelect(document.getElementById('ping_tickets'), pings.ticketPingRoles || []);
+        setMultiSelect(document.getElementById('ping_reports'), pings.reportPingRoles || []);
+        setMultiSelect(document.getElementById('ping_requests'), pings.requestPingRoles || []);
+        setMultiSelect(document.getElementById('admin_roles'), settings.adminRoleIds || []);
+
+        renderTickets(document.getElementById('ticketsTable'), meta.data.tickets);
+        renderReports(document.getElementById('reportsTable'), meta.data.reports);
+        renderRequests(
+          document.getElementById('requestsTable'),
+          meta.data.roleRequests,
+          meta.data.rosterRequests
+        );
+
+        document.getElementById('saveBtn').addEventListener('click', async () => {
+          const payload = {
+            panels: {
+              appPanelChannelId: document.getElementById('panel_app').value || null,
+              ticketPanelChannelId: document.getElementById('panel_ticket').value || null,
+              reportPanelChannelId: document.getElementById('panel_report').value || null,
+              requestPanelChannelId: document.getElementById('panel_request').value || null
+            },
+            logs: {
+              applicationsLogChannelId: document.getElementById('log_applications').value || null,
+              ticketTranscriptChannelId: document.getElementById('log_tickets').value || null,
+              requestsLogChannelId: document.getElementById('log_requests').value || null,
+              reports: {
+                citationLogChannelId: document.getElementById('log_rep_citation').value || null,
+                arrestLogChannelId: document.getElementById('log_rep_arrest').value || null,
+                uofLogChannelId: document.getElementById('log_rep_uof').value || null,
+                reaperAARChannelId: document.getElementById('log_rep_reaper').value || null,
+                cidIncidentLogChannelId: document.getElementById('log_rep_cid_incident').value || null,
+                cidCaseReportChannelId: document.getElementById('log_rep_cid_case').value || null,
+                tuShiftReportChannelId: document.getElementById('log_rep_tu_shift').value || null
+              }
+            },
+            pings: {
+              applicationPingRoles: getMultiSelect(document.getElementById('ping_applications')),
+              ticketPingRoles: getMultiSelect(document.getElementById('ping_tickets')),
+              reportPingRoles: getMultiSelect(document.getElementById('ping_reports')),
+              requestPingRoles: getMultiSelect(document.getElementById('ping_requests'))
+            },
+            adminRoleIds: getMultiSelect(document.getElementById('admin_roles'))
+          };
+
+          const res = await fetch('/admin/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const statusEl = document.getElementById('saveStatus');
+          if (res.ok) {
+            statusEl.textContent = 'Settings saved.';
+            setTimeout(() => { statusEl.textContent = ''; }, 3000);
+          } else {
+            statusEl.textContent = 'Failed to save settings.';
+          }
+        });
+      } catch (err) {
+        console.error('Error in admin init:', err);
+        document.body.innerHTML = '<p style="color:white;padding:20px;">Failed to load admin panel.</p>';
+      }
+    }
+
+    init();
+  </script>
 </body>
 </html>
-    `;
-
-    res.status(200).send(html);
-  } catch (err) {
-    console.error('Error in /admin handler:', err);
-    res.status(500).send('Internal server error');
-  }
+  `;
+  res.status(200).send(html);
 });
 
 const PORT = process.env.PORT || 3000;
