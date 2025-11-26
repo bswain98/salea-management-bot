@@ -1,5 +1,6 @@
 // storage.js
-// Simple JSON-based storage for applications, tickets, and duty sessions.
+// JSON-based storage for applications, tickets, duty sessions,
+// reports, role requests, roster requests, and dynamic settings.
 
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +12,39 @@ function ensureDB() {
     const initial = {
       applications: [],
       tickets: [],
-      sessions: []
+      sessions: [],
+      reports: [],
+      roleRequests: [],
+      rosterRequests: [],
+      settings: {
+        panels: {
+          appPanelChannelId: null,
+          ticketPanelChannelId: null,
+          reportPanelChannelId: null,
+          requestPanelChannelId: null
+        },
+        logs: {
+          applicationsLogChannelId: null,
+          ticketTranscriptChannelId: null,
+          reports: {
+            citationLogChannelId: null,
+            arrestLogChannelId: null,
+            uofLogChannelId: null,
+            reaperAARChannelId: null,
+            cidIncidentLogChannelId: null,
+            cidCaseReportChannelId: null,
+            tuShiftReportChannelId: null
+          },
+          requestsLogChannelId: null
+        },
+        pings: {
+          applicationPingRoles: [],
+          ticketPingRoles: [],
+          reportPingRoles: [],
+          requestPingRoles: []
+        },
+        adminRoleIds: []
+      }
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
   }
@@ -21,9 +54,83 @@ function readDB() {
   ensureDB();
   const raw = fs.readFileSync(DB_PATH, 'utf8');
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+
+    // Backfill if old DB layout
+    if (!parsed.settings) {
+      parsed.settings = {
+        panels: {
+          appPanelChannelId: null,
+          ticketPanelChannelId: null,
+          reportPanelChannelId: null,
+          requestPanelChannelId: null
+        },
+        logs: {
+          applicationsLogChannelId: null,
+          ticketTranscriptChannelId: null,
+          reports: {
+            citationLogChannelId: null,
+            arrestLogChannelId: null,
+            uofLogChannelId: null,
+            reaperAARChannelId: null,
+            cidIncidentLogChannelId: null,
+            cidCaseReportChannelId: null,
+            tuShiftReportChannelId: null
+          },
+          requestsLogChannelId: null
+        },
+        pings: {
+          applicationPingRoles: [],
+          ticketPingRoles: [],
+          reportPingRoles: [],
+          requestPingRoles: []
+        },
+        adminRoleIds: []
+      };
+    }
+    if (!parsed.reports) parsed.reports = [];
+    if (!parsed.roleRequests) parsed.roleRequests = [];
+    if (!parsed.rosterRequests) parsed.rosterRequests = [];
+
+    return parsed;
   } catch {
-    return { applications: [], tickets: [], sessions: [] };
+    return {
+      applications: [],
+      tickets: [],
+      sessions: [],
+      reports: [],
+      roleRequests: [],
+      rosterRequests: [],
+      settings: {
+        panels: {
+          appPanelChannelId: null,
+          ticketPanelChannelId: null,
+          reportPanelChannelId: null,
+          requestPanelChannelId: null
+        },
+        logs: {
+          applicationsLogChannelId: null,
+          ticketTranscriptChannelId: null,
+          reports: {
+            citationLogChannelId: null,
+            arrestLogChannelId: null,
+            uofLogChannelId: null,
+            reaperAARChannelId: null,
+            cidIncidentLogChannelId: null,
+            cidCaseReportChannelId: null,
+            tuShiftReportChannelId: null
+          },
+          requestsLogChannelId: null
+        },
+        pings: {
+          applicationPingRoles: [],
+          ticketPingRoles: [],
+          reportPingRoles: [],
+          requestPingRoles: []
+        },
+        adminRoleIds: []
+      }
+    };
   }
 }
 
@@ -82,6 +189,11 @@ function closeTicket(channelId) {
   db.tickets[idx] = ticket;
   writeDB(db);
   return ticket;
+}
+
+function listTickets() {
+  const db = readDB();
+  return db.tickets || [];
 }
 
 // -------------------- Duty Sessions --------------------
@@ -159,16 +271,104 @@ function getSessionsInRange(fromMs, assignmentFilter = null) {
   });
 }
 
+// -------------------- Reports --------------------
+
+function addReport(report) {
+  const db = readDB();
+  db.reports.push(report);
+  writeDB(db);
+  return report;
+}
+
+function listReports() {
+  const db = readDB();
+  return db.reports || [];
+}
+
+// -------------------- Requests --------------------
+
+function addRoleRequest(req) {
+  const db = readDB();
+  db.roleRequests.push(req);
+  writeDB(db);
+  return req;
+}
+
+function listRoleRequests() {
+  const db = readDB();
+  return db.roleRequests || [];
+}
+
+function addRosterRequest(req) {
+  const db = readDB();
+  db.rosterRequests.push(req);
+  writeDB(db);
+  return req;
+}
+
+function listRosterRequests() {
+  const db = readDB();
+  return db.rosterRequests || [];
+}
+
+// -------------------- Settings --------------------
+
+function getSettings() {
+  const db = readDB();
+  return db.settings || {};
+}
+
+function saveSettings(newSettings) {
+  const db = readDB();
+  db.settings = {
+    ...db.settings,
+    ...newSettings,
+    panels: {
+      ...(db.settings.panels || {}),
+      ...(newSettings.panels || {})
+    },
+    logs: {
+      ...(db.settings.logs || {}),
+      ...(newSettings.logs || {}),
+      reports: {
+        ...((db.settings.logs || {}).reports || {}),
+        ...(((newSettings.logs || {}).reports) || {})
+      }
+    },
+    pings: {
+      ...(db.settings.pings || {}),
+      ...(newSettings.pings || {})
+    },
+    adminRoleIds: newSettings.adminRoleIds || db.settings.adminRoleIds || []
+  };
+  writeDB(db);
+  return db.settings;
+}
+
 module.exports = {
   addApplication,
   updateApplicationStatus,
   getLatestApplicationForUser,
+
   addTicket,
   closeTicket,
+  listTickets,
+
   clockIn,
   clockOut,
   getOpenSession,
   getAllOpenSessions,
   getSessionsForUserInRange,
-  getSessionsInRange
+  getSessionsInRange,
+
+  addReport,
+  listReports,
+
+  addRoleRequest,
+  listRoleRequests,
+  addRosterRequest,
+  listRosterRequests,
+
+  getSettings,
+  saveSettings
 };
