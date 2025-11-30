@@ -76,6 +76,16 @@ function updateApplicationStatus(id, status, decidedBy, reasonOrDivision) {
   return app;
 }
 
+function getApplications() {
+  const data = load();
+  return data.applications;
+}
+
+function getApplicationById(id) {
+  const data = load();
+  return data.applications.find(a => a.id === id) || null;
+}
+
 // ----------------- Tickets -----------------
 function addTicket(ticket) {
   const data = load();
@@ -132,7 +142,6 @@ function clockIn(userId, assignmentOrAssignments) {
     userId,
     clockIn: Date.now(),
     clockOut: null,
-    // support multiple assignments
     assignments: Array.isArray(assignmentOrAssignments)
       ? assignmentOrAssignments
       : assignmentOrAssignments
@@ -243,7 +252,7 @@ function setStickyPanel(channelId, panelType) {
   const existingIdx = data.stickyPanels.findIndex(sp => sp.channelId === channelId);
   const record = {
     channelId,
-    panelType,          // 'applications' | 'reports' | 'tickets' | 'requests' | etc
+    panelType,
     updatedAt: Date.now()
   };
   if (existingIdx === -1) {
@@ -270,6 +279,8 @@ module.exports = {
   addApplication,
   updateApplicationStatus,
   getLatestApplicationForUser,
+  getApplications,
+  getApplicationById,
 
   // tickets
   addTicket,
