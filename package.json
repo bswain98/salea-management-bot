@@ -10,11 +10,6 @@
     "discord.js": "^14.15.3",
     "express": "^4.19.2",
     "express-session": "^1.17.3",
-    "passport": "^0.7.0",
-    "passport-discord": "^0.1.4",
-    "lowdb": "^6.0.1",
-    "lodash": "^4.17.21",
-    "nanoid": "^4.0.2",
-    "dotenv": "^16.4.5"
+    "jsonwebtoken": "^9.0.2"
   }
 }
