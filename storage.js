@@ -1,374 +1,305 @@
 // storage.js
-// JSON-based storage for applications, tickets, duty sessions,
-// reports, role requests, roster requests, and dynamic settings.
-
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'db.json');
+const DATA_FILE = path.join(__dirname, 'data.json');
 
-function ensureDB() {
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = {
-      applications: [],
-      tickets: [],
-      sessions: [],
-      reports: [],
-      roleRequests: [],
-      rosterRequests: [],
-      settings: {
-        panels: {
-          appPanelChannelId: null,
-          ticketPanelChannelId: null,
-          reportPanelChannelId: null,
-          requestPanelChannelId: null
-        },
-        logs: {
-          applicationsLogChannelId: null,
-          ticketTranscriptChannelId: null,
-          reports: {
-            citationLogChannelId: null,
-            arrestLogChannelId: null,
-            uofLogChannelId: null,
-            reaperAARChannelId: null,
-            cidIncidentLogChannelId: null,
-            cidCaseReportChannelId: null,
-            tuShiftReportChannelId: null
-          },
-          requestsLogChannelId: null
-        },
-        pings: {
-          applicationPingRoles: [],
-          ticketPingRoles: [],
-          reportPingRoles: [],
-          requestPingRoles: []
-        },
-        adminRoleIds: []
-      }
-    };
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
-  }
-}
-
-function readDB() {
-  ensureDB();
-  const raw = fs.readFileSync(DB_PATH, 'utf8');
-  try {
-    const parsed = JSON.parse(raw);
-
-    // Backfill if old DB layout
-    if (!parsed.settings) {
-      parsed.settings = {
-        panels: {
-          appPanelChannelId: null,
-          ticketPanelChannelId: null,
-          reportPanelChannelId: null,
-          requestPanelChannelId: null
-        },
-        logs: {
-          applicationsLogChannelId: null,
-          ticketTranscriptChannelId: null,
-          reports: {
-            citationLogChannelId: null,
-            arrestLogChannelId: null,
-            uofLogChannelId: null,
-            reaperAARChannelId: null,
-            cidIncidentLogChannelId: null,
-            cidCaseReportChannelId: null,
-            tuShiftReportChannelId: null
-          },
-          requestsLogChannelId: null
-        },
-        pings: {
-          applicationPingRoles: [],
-          ticketPingRoles: [],
-          reportPingRoles: [],
-          requestPingRoles: []
-        },
-        adminRoleIds: []
-      };
-    }
-    if (!parsed.reports) parsed.reports = [];
-    if (!parsed.roleRequests) parsed.roleRequests = [];
-    if (!parsed.rosterRequests) parsed.rosterRequests = [];
-
-    return parsed;
-  } catch {
+function load() {
+  if (!fs.existsSync(DATA_FILE)) {
     return {
       applications: [],
       tickets: [],
       sessions: [],
       reports: [],
-      roleRequests: [],
-      rosterRequests: [],
-      settings: {
-        panels: {
-          appPanelChannelId: null,
-          ticketPanelChannelId: null,
-          reportPanelChannelId: null,
-          requestPanelChannelId: null
-        },
-        logs: {
-          applicationsLogChannelId: null,
-          ticketTranscriptChannelId: null,
-          reports: {
-            citationLogChannelId: null,
-            arrestLogChannelId: null,
-            uofLogChannelId: null,
-            reaperAARChannelId: null,
-            cidIncidentLogChannelId: null,
-            cidCaseReportChannelId: null,
-            tuShiftReportChannelId: null
-          },
-          requestsLogChannelId: null
-        },
-        pings: {
-          applicationPingRoles: [],
-          ticketPingRoles: [],
-          reportPingRoles: [],
-          requestPingRoles: []
-        },
-        adminRoleIds: []
-      }
+      requests: [],
+      stickyPanels: []
+    };
+  }
+  try {
+    const raw = fs.readFileSync(DATA_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      applications: parsed.applications || [],
+      tickets: parsed.tickets || [],
+      sessions: parsed.sessions || [],
+      reports: parsed.reports || [],
+      requests: parsed.requests || [],
+      stickyPanels: parsed.stickyPanels || []
+    };
+  } catch (e) {
+    console.error('[Storage] Failed to load data.json:', e);
+    return {
+      applications: [],
+      tickets: [],
+      sessions: [],
+      reports: [],
+      requests: [],
+      stickyPanels: []
     };
   }
 }
 
-function writeDB(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+function save(data) {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error('[Storage] Failed to save data.json:', e);
+  }
 }
 
-// -------------------- Applications --------------------
-
+// ----------------- Applications -----------------
 function addApplication(app) {
-  const db = readDB();
-  db.applications.push(app);
-  writeDB(db);
+  const data = load();
+  data.applications.push(app);
+  save(data);
   return app;
 }
 
 function getLatestApplicationForUser(userId) {
-  const db = readDB();
-  const apps = db.applications.filter(a => a.userId === userId);
+  const data = load();
+  const apps = data.applications.filter(a => a.userId === userId);
   if (apps.length === 0) return null;
-  return apps[apps.length - 1];
+  return apps.sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 
 function updateApplicationStatus(id, status, decidedBy, reasonOrDivision) {
-  const db = readDB();
-  const idx = db.applications.findIndex(a => a.id === id);
+  const data = load();
+  const idx = data.applications.findIndex(a => a.id === id);
   if (idx === -1) return null;
-
-  const app = db.applications[idx];
+  const app = data.applications[idx];
   app.status = status;
   app.decidedAt = Date.now();
   app.decidedBy = decidedBy;
   app.decisionReason = reasonOrDivision;
-  db.applications[idx] = app;
-
-  writeDB(db);
+  data.applications[idx] = app;
+  save(data);
   return app;
 }
 
-// -------------------- Tickets --------------------
-
+// ----------------- Tickets -----------------
 function addTicket(ticket) {
-  const db = readDB();
-  db.tickets.push(ticket);
-  writeDB(db);
+  const data = load();
+  data.tickets.push({ ...ticket, id: ticket.id || `ticket_${Date.now()}`, done: false });
+  save(data);
   return ticket;
 }
 
 function closeTicket(channelId) {
-  const db = readDB();
-  const idx = db.tickets.findIndex(t => t.channelId === channelId);
+  const data = load();
+  const idx = data.tickets.findIndex(t => t.channelId === channelId && !t.closedAt);
   if (idx === -1) return null;
-
-  const ticket = db.tickets[idx];
-  ticket.closedAt = Date.now();
-  db.tickets[idx] = ticket;
-  writeDB(db);
-  return ticket;
+  data.tickets[idx].closedAt = Date.now();
+  save(data);
+  return data.tickets[idx];
 }
 
-function listTickets() {
-  const db = readDB();
-  return db.tickets || [];
+function getTickets() {
+  const data = load();
+  return data.tickets;
 }
 
-// -------------------- Duty Sessions --------------------
+function getTicketById(id) {
+  const data = load();
+  return data.tickets.find(t => t.id === id) || null;
+}
 
-// clockIn: allow single assignment or array of assignments
+function setTicketDone(id, done) {
+  const data = load();
+  const idx = data.tickets.findIndex(t => t.id === id);
+  if (idx === -1) return null;
+  data.tickets[idx].done = !!done;
+  save(data);
+  return data.tickets[idx];
+}
+
+// ----------------- Sessions (clock / activity) -----------------
+function getAllOpenSessions() {
+  const data = load();
+  return data.sessions.filter(s => !s.clockOut);
+}
+
+function getOpenSession(userId) {
+  const data = load();
+  return data.sessions.find(s => s.userId === userId && !s.clockOut) || null;
+}
+
 function clockIn(userId, assignmentOrAssignments) {
-  const db = readDB();
-
-  const existing = db.sessions.find(s => s.userId === userId && !s.clockOut);
-  if (existing) return null;
-
-  let assignments = [];
-  if (Array.isArray(assignmentOrAssignments)) {
-    assignments = assignmentOrAssignments;
-  } else if (typeof assignmentOrAssignments === 'string') {
-    assignments = [assignmentOrAssignments];
-  }
-
+  const data = load();
+  const already = data.sessions.find(s => s.userId === userId && !s.clockOut);
+  if (already) return null;
   const session = {
-    id: `${userId}-${Date.now()}`,
+    id: `sess_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
     userId,
-    assignments,
     clockIn: Date.now(),
-    clockOut: null
+    clockOut: null,
+    // support multiple assignments
+    assignments: Array.isArray(assignmentOrAssignments)
+      ? assignmentOrAssignments
+      : assignmentOrAssignments
+      ? [assignmentOrAssignments]
+      : []
   };
-
-  db.sessions.push(session);
-  writeDB(db);
+  data.sessions.push(session);
+  save(data);
   return session;
 }
 
 function clockOut(userId) {
-  const db = readDB();
-  const idx = db.sessions.findIndex(s => s.userId === userId && !s.clockOut);
+  const data = load();
+  const idx = data.sessions.findIndex(s => s.userId === userId && !s.clockOut);
   if (idx === -1) return null;
-
-  db.sessions[idx].clockOut = Date.now();
-  const session = db.sessions[idx];
-  writeDB(db);
-  return session;
+  data.sessions[idx].clockOut = Date.now();
+  save(data);
+  return data.sessions[idx];
 }
 
-function getOpenSession(userId) {
-  const db = readDB();
-  return db.sessions.find(s => s.userId === userId && !s.clockOut) || null;
-}
-
-function getAllOpenSessions() {
-  const db = readDB();
-  return db.sessions.filter(s => !s.clockOut);
-}
-
-function getSessionsForUserInRange(userId, fromMs) {
-  const db = readDB();
-  return db.sessions.filter(
+function getSessionsForUserInRange(userId, fromTs) {
+  const data = load();
+  return data.sessions.filter(
     s =>
       s.userId === userId &&
       s.clockOut &&
-      s.clockIn >= fromMs &&
-      s.clockOut >= s.clockIn
+      s.clockOut >= fromTs
   );
 }
 
-// assignmentFilter: null or a specific assignment string (e.g. 'Patrol')
-function getSessionsInRange(fromMs, assignmentFilter = null) {
-  const db = readDB();
-  return db.sessions.filter(s => {
-    if (!s.clockOut) return false;
-    if (s.clockIn < fromMs) return false;
-    if (assignmentFilter) {
-      const assignments = Array.isArray(s.assignments) ? s.assignments : [];
-      if (!assignments.includes(assignmentFilter)) return false;
-    }
-    return true;
+function getSessionsInRange(fromTs, assignmentFilter = null) {
+  const data = load();
+  return data.sessions.filter(s => {
+    if (!s.clockOut || s.clockOut < fromTs) return false;
+    if (!assignmentFilter) return true;
+    const arr = Array.isArray(s.assignments) ? s.assignments : [];
+    return arr.includes(assignmentFilter);
   });
 }
 
-// -------------------- Reports --------------------
-
+// ----------------- Reports -----------------
 function addReport(report) {
-  const db = readDB();
-  db.reports.push(report);
-  writeDB(db);
-  return report;
-}
-
-function listReports() {
-  const db = readDB();
-  return db.reports || [];
-}
-
-// -------------------- Requests --------------------
-
-function addRoleRequest(req) {
-  const db = readDB();
-  db.roleRequests.push(req);
-  writeDB(db);
-  return req;
-}
-
-function listRoleRequests() {
-  const db = readDB();
-  return db.roleRequests || [];
-}
-
-function addRosterRequest(req) {
-  const db = readDB();
-  db.rosterRequests.push(req);
-  writeDB(db);
-  return req;
-}
-
-function listRosterRequests() {
-  const db = readDB();
-  return db.rosterRequests || [];
-}
-
-// -------------------- Settings --------------------
-
-function getSettings() {
-  const db = readDB();
-  return db.settings || {};
-}
-
-function saveSettings(newSettings) {
-  const db = readDB();
-  db.settings = {
-    ...db.settings,
-    ...newSettings,
-    panels: {
-      ...(db.settings.panels || {}),
-      ...(newSettings.panels || {})
-    },
-    logs: {
-      ...(db.settings.logs || {}),
-      ...(newSettings.logs || {}),
-      reports: {
-        ...((db.settings.logs || {}).reports || {}),
-        ...(((newSettings.logs || {}).reports) || {})
-      }
-    },
-    pings: {
-      ...(db.settings.pings || {}),
-      ...(newSettings.pings || {})
-    },
-    adminRoleIds: newSettings.adminRoleIds || db.settings.adminRoleIds || []
+  const data = load();
+  const r = {
+    ...report,
+    id: report.id || `report_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    done: false
   };
-  writeDB(db);
-  return db.settings;
+  data.reports.push(r);
+  save(data);
+  return r;
+}
+
+function getReports() {
+  const data = load();
+  return data.reports;
+}
+
+function getReportById(id) {
+  const data = load();
+  return data.reports.find(r => r.id === id) || null;
+}
+
+function setReportDone(id, done) {
+  const data = load();
+  const idx = data.reports.findIndex(r => r.id === id);
+  if (idx === -1) return null;
+  data.reports[idx].done = !!done;
+  save(data);
+  return data.reports[idx];
+}
+
+// ----------------- Requests (roster, role) -----------------
+function addRequest(request) {
+  const data = load();
+  const r = {
+    ...request,
+    id: request.id || `request_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    done: false
+  };
+  data.requests.push(r);
+  save(data);
+  return r;
+}
+
+function getRequests() {
+  const data = load();
+  return data.requests;
+}
+
+function getRequestById(id) {
+  const data = load();
+  return data.requests.find(r => r.id === id) || null;
+}
+
+function setRequestDone(id, done) {
+  const data = load();
+  const idx = data.requests.findIndex(r => r.id === id);
+  if (idx === -1) return null;
+  data.requests[idx].done = !!done;
+  save(data);
+  return data.requests[idx];
+}
+
+// ----------------- Sticky panels -----------------
+function setStickyPanel(channelId, panelType) {
+  const data = load();
+  const existingIdx = data.stickyPanels.findIndex(sp => sp.channelId === channelId);
+  const record = {
+    channelId,
+    panelType,          // 'applications' | 'reports' | 'tickets' | 'requests' | etc
+    updatedAt: Date.now()
+  };
+  if (existingIdx === -1) {
+    data.stickyPanels.push(record);
+  } else {
+    data.stickyPanels[existingIdx] = { ...data.stickyPanels[existingIdx], ...record };
+  }
+  save(data);
+  return record;
+}
+
+function getStickyPanels() {
+  const data = load();
+  return data.stickyPanels;
+}
+
+function getStickyPanelForChannel(channelId) {
+  const data = load();
+  return data.stickyPanels.find(sp => sp.channelId === channelId) || null;
 }
 
 module.exports = {
+  // applications
   addApplication,
   updateApplicationStatus,
   getLatestApplicationForUser,
 
+  // tickets
   addTicket,
   closeTicket,
-  listTickets,
+  getTickets,
+  getTicketById,
+  setTicketDone,
 
+  // sessions
+  getAllOpenSessions,
+  getOpenSession,
   clockIn,
   clockOut,
-  getOpenSession,
-  getAllOpenSessions,
   getSessionsForUserInRange,
   getSessionsInRange,
 
+  // reports
   addReport,
-  listReports,
+  getReports,
+  getReportById,
+  setReportDone,
 
-  addRoleRequest,
-  listRoleRequests,
-  addRosterRequest,
-  listRosterRequests,
+  // requests
+  addRequest,
+  getRequests,
+  getRequestById,
+  setRequestDone,
 
-  getSettings,
-  saveSettings
+  // sticky
+  setStickyPanel,
+  getStickyPanels,
+  getStickyPanelForChannel
 };
