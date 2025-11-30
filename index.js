@@ -93,15 +93,18 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
+// IMPORTANT: corrected callback URL
+const CALLBACK_URL =
+  process.env.DISCORD_CALLBACK_URL ||
+  process.env.DASHBOARD_CALLBACK_URL ||
+  'https://salea-management-bot.onrender.com/auth/discord/callback';
+
 passport.use(
   new DiscordStrategy(
     {
       clientID: process.env.DISCORD_CLIENT_ID || config.clientId,
       clientSecret: process.env.DISCORD_CLIENT_SECRET || 'PUT_CLIENT_SECRET_HERE',
-      callbackURL:
-        process.env.DISCORD_CALLBACK_URL ||
-        process.env.DASHBOARD_CALLBACK_URL ||
-        'http://localhost:3000/auth/discord/callback',
+      callbackURL: CALLBACK_URL,
       scope: ['identify']
     },
     (accessToken, refreshToken, profile, done) => {
@@ -301,6 +304,7 @@ app.get('/api/me', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Admin dashboard listening on port ${PORT}`);
+  console.log(`🌐 Using Discord OAuth callback URL: ${CALLBACK_URL}`);
 });
 
 // ---------------------------
