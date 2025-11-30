@@ -1,0 +1,461 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SALEA Admin Panel</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b1120;
+      color: #e5e7eb;
+      margin: 0;
+    }
+    header {
+      padding: 12px 20px;
+      background: #020617;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #1f2937;
+    }
+    header h1 { font-size: 18px; margin: 0; }
+    header span { font-size: 13px; color: #9ca3af; }
+    main { display: flex; padding: 16px; gap: 16px; }
+    .column { flex: 2; }
+    .detail { flex: 1.3; background: #020617; border-radius: 12px; padding: 12px; border: 1px solid #1f2937; }
+    h2 { font-size: 16px; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #1f2937;
+    }
+    th { text-align: left; color: #9ca3af; }
+    tr {
+      cursor: pointer;
+    }
+    tr:hover { background: #111827; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #111827;
+      color: #e5e7eb;
+    }
+    .pill.done { background: #14532d; color: #bbf7d0; }
+    .pill.open { background: #7c2d12; color: #fed7aa; }
+    .checkbox-cell {
+      text-align: center;
+    }
+    .checkbox-cell input {
+      cursor: pointer;
+    }
+    .detail h3 {
+      margin-top: 0;
+      font-size: 15px;
+    }
+    .detail pre {
+      white-space: pre-wrap;
+      font-size: 12px;
+      background: #020617;
+      border-radius: 8px;
+      padding: 8px;
+      border: 1px solid #1f2937;
+    }
+    .tag {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid #4b5563;
+      margin-right: 4px;
+      color: #9ca3af;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #111827;
+      color: #e5e7eb;
+      margin-left: 6px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .section-title span {
+      font-size: 12px;
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SALEA Admin Panel</h1>
+    <span id="guildInfo">Loading guild…</span>
+  </header>
+
+  <main>
+    <div class="column">
+      <div class="section">
+        <div class="section-title">
+          <h2>Tickets</h2>
+          <span id="ticketsCount"></span>
+        </div>
+        <table id="ticketsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>User</th>
+              <th>Subject</th>
+              <th>Status</th>
+              <th class="checkbox-cell">Done</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="section" style="margin-top:20px;">
+        <div class="section-title">
+          <h2>Reports</h2>
+          <span id="reportsCount"></span>
+        </div>
+        <table id="reportsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>User</th>
+              <th>Created</th>
+              <th class="checkbox-cell">Done</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="section" style="margin-top:20px;">
+        <div class="section-title">
+          <h2>Requests</h2>
+          <span id="requestsCount"></span>
+        </div>
+        <table id="requestsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>User</th>
+              <th>Created</th>
+              <th class="checkbox-cell">Done</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="detail">
+      <h2>Detail</h2>
+      <div id="detailContent">
+        <p style="font-size:13px;color:#9ca3af;">
+          Click any ticket, report, or request to view full details here.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_BASE = '/admin/api';
+    const token = localStorage.getItem('adminToken'); // your JWT from login flow
+
+    if (!token) {
+      alert('Missing admin token. Please log in through your admin auth flow.');
+    }
+
+    async function apiGet(path) {
+      const res = await fetch(API_BASE + path, {
+        headers: {
+          'Authorization': 'Bearer ' + token
+        }
+      });
+      if (!res.ok) throw new Error('GET ' + path + ' ' + res.status);
+      return res.json();
+    }
+
+    async function apiPost(path, body) {
+      const res = await fetch(API_BASE + path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token
+        },
+        body: JSON.stringify(body || {})
+      });
+      if (!res.ok) throw new Error('POST ' + path + ' ' + res.status);
+      return res.json();
+    }
+
+    function formatDate(ts) {
+      if (!ts) return 'N/A';
+      const d = new Date(ts);
+      return d.toLocaleString();
+    }
+
+    function setDetail(title, meta, body) {
+      const el = document.getElementById('detailContent');
+      el.innerHTML = '';
+      const h = document.createElement('h3');
+      h.textContent = title;
+      el.appendChild(h);
+
+      if (meta && meta.length) {
+        const metaDiv = document.createElement('div');
+        metaDiv.style.marginBottom = '8px';
+        meta.forEach(m => {
+          const span = document.createElement('span');
+          span.className = 'tag';
+          span.textContent = `${m.label}: ${m.value}`;
+          metaDiv.appendChild(span);
+        });
+        el.appendChild(metaDiv);
+      }
+
+      if (body) {
+        const pre = document.createElement('pre');
+        pre.textContent = body;
+        el.appendChild(pre);
+      }
+    }
+
+    async function loadMeta() {
+      try {
+        const meta = await apiGet('/meta');
+        document.getElementById('guildInfo').textContent = `${meta.guild.name} (${meta.guild.id})`;
+      } catch (e) {
+        console.error(e);
+        document.getElementById('guildInfo').textContent = 'Failed to load guild info';
+      }
+    }
+
+    async function loadTickets() {
+      const data = await apiGet('/tickets');
+      const tbody = document.querySelector('#ticketsTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('ticketsCount').textContent = `${data.length} total`;
+
+      data.forEach(t => {
+        const tr = document.createElement('tr');
+        tr.dataset.id = t.id;
+
+        const tdId = document.createElement('td');
+        tdId.textContent = t.id.replace('ticket_', '');
+        tr.appendChild(tdId);
+
+        const tdType = document.createElement('td');
+        tdType.textContent = t.type || 'N/A';
+        tr.appendChild(tdType);
+
+        const tdUser = document.createElement('td');
+        tdUser.textContent = t.userId || 'N/A';
+        tr.appendChild(tdUser);
+
+        const tdSubject = document.createElement('td');
+        tdSubject.textContent = t.subject || '';
+        tr.appendChild(tdSubject);
+
+        const tdStatus = document.createElement('td');
+        const span = document.createElement('span');
+        span.className = 'pill ' + (t.closedAt ? 'done' : 'open');
+        span.textContent = t.closedAt ? 'Closed' : 'Open';
+        tdStatus.appendChild(span);
+        tr.appendChild(tdStatus);
+
+        const tdDone = document.createElement('td');
+        tdDone.className = 'checkbox-cell';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!t.done;
+        cb.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          try {
+            await apiPost(`/tickets/${t.id}/done`, { done: cb.checked });
+          } catch (e) {
+            console.error(e);
+            cb.checked = !cb.checked;
+            alert('Failed to update done status');
+          }
+        });
+        tdDone.appendChild(cb);
+        tr.appendChild(tdDone);
+
+        tr.addEventListener('click', async () => {
+          try {
+            const full = await apiGet(`/tickets/${t.id}`);
+            setDetail(
+              `Ticket ${full.id}`,
+              [
+                { label: 'Type', value: full.type || 'N/A' },
+                { label: 'User', value: full.userId || 'N/A' },
+                { label: 'Subject', value: full.subject || '' },
+                { label: 'Created', value: formatDate(full.createdAt) },
+                { label: 'Closed', value: full.closedAt ? formatDate(full.closedAt) : 'Open' },
+                { label: 'Done', value: full.done ? 'Yes' : 'No' }
+              ],
+              `Channel: ${full.channelId || 'N/A'}`
+            );
+          } catch (e) {
+            console.error(e);
+          }
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadReports() {
+      const data = await apiGet('/reports');
+      const tbody = document.querySelector('#reportsTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('reportsCount').textContent = `${data.length} total`;
+
+      data.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.dataset.id = r.id;
+
+        const tdId = document.createElement('td');
+        tdId.textContent = r.id.replace('report_', '');
+        tr.appendChild(tdId);
+
+        const tdType = document.createElement('td');
+        tdType.textContent = r.type || 'N/A';
+        tr.appendChild(tdType);
+
+        const tdUser = document.createElement('td');
+        tdUser.textContent = r.userId || 'N/A';
+        tr.appendChild(tdUser);
+
+        const tdCreated = document.createElement('td');
+        tdCreated.textContent = formatDate(r.createdAt);
+        tr.appendChild(tdCreated);
+
+        const tdDone = document.createElement('td');
+        tdDone.className = 'checkbox-cell';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!r.done;
+        cb.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          try {
+            await apiPost(`/reports/${r.id}/done`, { done: cb.checked });
+          } catch (e) {
+            console.error(e);
+            cb.checked = !cb.checked;
+            alert('Failed to update done status');
+          }
+        });
+        tdDone.appendChild(cb);
+        tr.appendChild(tdDone);
+
+        tr.addEventListener('click', async () => {
+          try {
+            const full = await apiGet(`/reports/${r.id}`);
+            setDetail(
+              `Report ${full.id}`,
+              [
+                { label: 'Type', value: full.type || 'N/A' },
+                { label: 'User', value: full.userId || 'N/A' },
+                { label: 'Created', value: formatDate(full.createdAt) },
+                { label: 'Done', value: full.done ? 'Yes' : 'No' }
+              ],
+              JSON.stringify(full, null, 2)
+            );
+          } catch (e) {
+            console.error(e);
+          }
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadRequests() {
+      const data = await apiGet('/requests');
+      const tbody = document.querySelector('#requestsTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('requestsCount').textContent = `${data.length} total`;
+
+      data.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.dataset.id = r.id;
+
+        const tdId = document.createElement('td');
+        tdId.textContent = r.id.replace('request_', '');
+        tr.appendChild(tdId);
+
+        const tdType = document.createElement('td');
+        tdType.textContent = r.type || 'N/A';
+        tr.appendChild(tdType);
+
+        const tdUser = document.createElement('td');
+        tdUser.textContent = r.userId || 'N/A';
+        tr.appendChild(tdUser);
+
+        const tdCreated = document.createElement('td');
+        tdCreated.textContent = formatDate(r.createdAt);
+        tr.appendChild(tdCreated);
+
+        const tdDone = document.createElement('td');
+        tdDone.className = 'checkbox-cell';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!r.done;
+        cb.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          try {
+            await apiPost(`/requests/${r.id}/done`, { done: cb.checked });
+          } catch (e) {
+            console.error(e);
+            cb.checked = !cb.checked;
+            alert('Failed to update done status');
+          }
+        });
+        tdDone.appendChild(cb);
+        tr.appendChild(tdDone);
+
+        tr.addEventListener('click', async () => {
+          try {
+            const full = await apiGet(`/requests/${r.id}`);
+            setDetail(
+              `Request ${full.id}`,
+              [
+                { label: 'Type', value: full.type || 'N/A' },
+                { label: 'User', value: full.userId || 'N/A' },
+                { label: 'Created', value: formatDate(full.createdAt) },
+                { label: 'Done', value: full.done ? 'Yes' : 'No' }
+              ],
+              JSON.stringify(full, null, 2)
+            );
+          } catch (e) {
+            console.error(e);
+          }
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function init() {
+      if (!token) return;
+      await loadMeta();
+      await loadTickets();
+      await loadReports();
+      await loadRequests();
+    }
+
+    init();
+  </script>
+</body>
+</html>
