@@ -59,6 +59,14 @@ const client = new Client({
 
 let dutyBoardMessageId = null;
 
+// Helper: wait until bot is ready
+function ensureClientReady() {
+  return new Promise(resolve => {
+    if (client.isReady && client.isReady()) return resolve();
+    client.once(Events.ClientReady, () => resolve());
+  });
+}
+
 // ---------------------------
 // Express app (Admin panel)
 // ---------------------------
@@ -93,7 +101,7 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
-// IMPORTANT: corrected callback URL
+// Use Render URL (env) or fallback to Render domain, not localhost
 const CALLBACK_URL =
   process.env.DISCORD_CALLBACK_URL ||
   process.env.DASHBOARD_CALLBACK_URL ||
@@ -155,7 +163,6 @@ async function updateDutyBoard(guild) {
     return;
   }
 
-  // Handle if a full Discord URL accidentally got pasted
   const match = channelIdRaw.match(/\d{15,}/);
   const channelId = match ? match[0] : channelIdRaw;
 
@@ -221,41 +228,62 @@ function isAdminSession(req) {
 function requireAdmin(req, res, next) {
   if (isAdminSession(req)) return next();
 
-  // If it's an API request, send JSON
   if (req.path.startsWith('/api/')) {
     return res.status(401).json({
       error: 'Missing or invalid admin session. Please log in via Discord.'
     });
   }
-  // Otherwise, redirect to Discord login
+
   return res.redirect('/auth/discord');
 }
 
 // Discord OAuth routes
 app.get('/auth/discord', passport.authenticate('discord'));
 
+// ✅ Callback: admin = anyone with the "--High Command--" role (or highCommandRoleIds in config)
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/auth-failed' }),
   async (req, res) => {
     try {
-      const guild = await client.guilds.fetch(config.guildId);
+      // Wait for bot to be ready
+      await ensureClientReady();
+
+      const guildId = config.guildId;
+      if (!guildId) {
+        console.error('No guildId in config.json');
+        return res.status(500).send('Bot configuration error: missing guildId.');
+      }
+
+      const guild = await client.guilds.fetch(guildId);
       const member = await guild.members.fetch(req.user.id).catch(() => null);
 
-      const adminRoleIds =
-        (config.roles && config.roles.highCommandRoleIds) ||
-        (config.roles && config.roles.staffRoleId ? [config.roles.staffRoleId] : []) ||
-        [];
+      if (!member) {
+        req.logout(() => {});
+        return res
+          .status(403)
+          .send('You must be in the SALEA Discord server to use this admin panel.');
+      }
 
-      const isAdmin = member && hasAnyRole(member, adminRoleIds);
+      // Check for role named "--High Command--"
+      const hasNamedHC = member.roles.cache.some(
+        role => role.name === '--High Command--'
+      );
+
+      // Also respect highCommandRoleIds from config (fallback / extra control)
+      const hcIds = (config.roles && config.roles.highCommandRoleIds) || [];
+      const hasConfigHC = hcIds.length > 0 ? hasAnyRole(member, hcIds) : false;
+
+      const isAdmin = hasNamedHC || hasConfigHC;
 
       if (!isAdmin) {
         req.logout(() => {});
         return res
           .status(403)
-          .send('You do not have the required SALEA roles to access the admin panel.');
+          .send('You do not have the --High Command-- role required for admin access.');
       }
 
+      // Mark session as admin
       req.session.isAdmin = true;
       res.redirect('/admin');
     } catch (err) {
@@ -311,13 +339,11 @@ app.listen(PORT, () => {
 // Slash command definitions
 // ---------------------------
 const commands = [
-  // /setup-app-panel
   new SlashCommandBuilder()
     .setName('setup-app-panel')
     .setDescription('Post the application panel with apply buttons.')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
-  // /app approve / deny
   new SlashCommandBuilder()
     .setName('app')
     .setDescription('Application management.')
@@ -366,7 +392,6 @@ const commands = [
         )
     ),
 
-  // /ticket open / close
   new SlashCommandBuilder()
     .setName('ticket')
     .setDescription('Ticket system.')
@@ -399,7 +424,6 @@ const commands = [
         .setDescription('Close this ticket channel (with transcript).')
     ),
 
-  // /clock in / out / status
   new SlashCommandBuilder()
     .setName('clock')
     .setDescription('Clock in and out of duty.')
@@ -435,7 +459,6 @@ const commands = [
         .setDescription('Check your current clock-in status.')
     ),
 
-  // /activity self/member/top
   new SlashCommandBuilder()
     .setName('activity')
     .setDescription('View duty activity.')
@@ -530,7 +553,6 @@ client.once(Events.ClientReady, async readyClient => {
     console.error('❌ Error registering commands:', error);
   }
 
-  // Sync duty board on startup
   try {
     const guild = await client.guilds.fetch(config.guildId);
     await updateDutyBoard(guild);
@@ -543,7 +565,6 @@ client.once(Events.ClientReady, async readyClient => {
 // Interaction handler
 // ---------------------------
 client.on(Events.InteractionCreate, async interaction => {
-  // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
@@ -639,7 +660,6 @@ client.on(Events.InteractionCreate, async interaction => {
           ? updateApplicationStatus(latestApp.id, 'approved', interaction.user.id, division)
           : null;
 
-        // Role changes
         if (
           config.roles.applicantRoleId &&
           guildMember.roles.cache.has(config.roles.applicantRoleId)
@@ -655,9 +675,7 @@ client.on(Events.InteractionCreate, async interaction => {
             `✅ Your application to SALEA (**${division}**) has been **approved**. ` +
             `Welcome aboard as a Cadet!`
           );
-        } catch {
-          // ignore DM failures
-        }
+        } catch {}
 
         const embed = new EmbedBuilder()
           .setTitle('Application Approved')
@@ -704,9 +722,7 @@ client.on(Events.InteractionCreate, async interaction => {
             `❌ Your application to SALEA has been **denied**.\n` +
             `Reason: ${reason}`
           );
-        } catch {
-          // ignore DM failures
-        }
+        } catch {}
 
         const embed = new EmbedBuilder()
           .setTitle('Application Denied')
@@ -951,7 +967,6 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        // Add on-duty role if configured
         if (config.roles.onDutyRoleId) {
           try {
             await member.roles.add(config.roles.onDutyRoleId);
@@ -960,7 +975,6 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
 
-        // Update duty board
         await updateDutyBoard(interaction.guild);
 
         await interaction.reply({
@@ -1025,10 +1039,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const range = interaction.options.getString('range');
         const from = getRangeStart(range);
         const sessions = getSessionsForUserInRange(interaction.user.id, from);
-        const totalMs = sessions.reduce(
-          (sum, s) => sum + (s.clockOut - s.clockIn),
-          0
-        );
+        const totalMs = sessions.reduce((sum, s) => sum + (s.clockOut - s.clockIn), 0);
 
         return interaction.reply({
           content:
@@ -1054,10 +1065,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const from = getRangeStart(range);
         const sessions = getSessionsForUserInRange(user.id, from);
-        const totalMs = sessions.reduce(
-          (sum, s) => sum + (s.clockOut - s.clockIn),
-          0
-        );
+        const totalMs = sessions.reduce((sum, s) => sum + (s.clockOut - s.clockIn), 0);
 
         return interaction.reply({
           content:
