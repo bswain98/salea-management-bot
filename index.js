@@ -1,8 +1,13 @@
 // index.js
-// Core imports
+
+// ---------------------------
+// Imports
+// ---------------------------
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
+const passport = require('passport');
+const DiscordStrategy = require('passport-discord').Strategy;
 
 const {
   Client,
@@ -41,37 +46,6 @@ const {
 const config = require('./config.json');
 
 // ---------------------------
-// Express app (admin panel)
-// ---------------------------
-const app = express();
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Serve static files (admin.html, JS, CSS, etc.) from /public
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Simple session (can be upgraded later)
-app.use(
-  session({
-    secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
-    resave: false,
-    saveUninitialized: false
-  })
-);
-
-// Admin panel route – serves public/admin.html
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
-
-// Start HTTP server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌐 Admin dashboard listening on port ${PORT}`);
-});
-
-// ---------------------------
 // Discord client
 // ---------------------------
 const client = new Client({
@@ -84,6 +58,57 @@ const client = new Client({
 });
 
 let dutyBoardMessageId = null;
+
+// ---------------------------
+// Express app (Admin panel)
+// ---------------------------
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Sessions (used for Discord OAuth)
+app.use(
+  session({
+    secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
+    resave: false,
+    saveUninitialized: false
+  })
+);
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Serve static files for admin panel (public/admin.html, css, js)
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------------------------
+// Passport (Discord OAuth)
+// ---------------------------
+passport.serializeUser((user, done) => {
+  done(null, user);
+});
+
+passport.deserializeUser((obj, done) => {
+  done(null, obj);
+});
+
+passport.use(
+  new DiscordStrategy(
+    {
+      clientID: process.env.DISCORD_CLIENT_ID || config.clientId,
+      clientSecret: process.env.DISCORD_CLIENT_SECRET || 'PUT_CLIENT_SECRET_HERE',
+      callbackURL:
+        process.env.DISCORD_CALLBACK_URL ||
+        process.env.DASHBOARD_CALLBACK_URL ||
+        'http://localhost:3000/auth/discord/callback',
+      scope: ['identify']
+    },
+    (accessToken, refreshToken, profile, done) => {
+      return done(null, profile);
+    }
+  )
+);
 
 // ---------------------------
 // Utility functions
@@ -127,7 +152,7 @@ async function updateDutyBoard(guild) {
     return;
   }
 
-  // Ensure we only use a numeric ID (in case someone pasted a URL)
+  // Handle if a full Discord URL accidentally got pasted
   const match = channelIdRaw.match(/\d{15,}/);
   const channelId = match ? match[0] : channelIdRaw;
 
@@ -184,10 +209,105 @@ async function updateDutyBoard(guild) {
 }
 
 // ---------------------------
+// Admin auth helpers
+// ---------------------------
+function isAdminSession(req) {
+  return req.isAuthenticated && req.isAuthenticated() && req.session && req.session.isAdmin;
+}
+
+function requireAdmin(req, res, next) {
+  if (isAdminSession(req)) return next();
+
+  // If it's an API request, send JSON
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({
+      error: 'Missing or invalid admin session. Please log in via Discord.'
+    });
+  }
+  // Otherwise, redirect to Discord login
+  return res.redirect('/auth/discord');
+}
+
+// Discord OAuth routes
+app.get('/auth/discord', passport.authenticate('discord'));
+
+app.get(
+  '/auth/discord/callback',
+  passport.authenticate('discord', { failureRedirect: '/auth-failed' }),
+  async (req, res) => {
+    try {
+      const guild = await client.guilds.fetch(config.guildId);
+      const member = await guild.members.fetch(req.user.id).catch(() => null);
+
+      const adminRoleIds =
+        (config.roles && config.roles.highCommandRoleIds) ||
+        (config.roles && config.roles.staffRoleId ? [config.roles.staffRoleId] : []) ||
+        [];
+
+      const isAdmin = member && hasAnyRole(member, adminRoleIds);
+
+      if (!isAdmin) {
+        req.logout(() => {});
+        return res
+          .status(403)
+          .send('You do not have the required SALEA roles to access the admin panel.');
+      }
+
+      req.session.isAdmin = true;
+      res.redirect('/admin');
+    } catch (err) {
+      console.error('Error during Discord auth callback:', err);
+      res.status(500).send('Internal error during Discord auth.');
+    }
+  }
+);
+
+app.get('/auth-failed', (req, res) => {
+  res.status(401).send('Discord authentication failed or was denied.');
+});
+
+app.get('/logout', (req, res) => {
+  req.logout(() => {
+    req.session.destroy(() => {
+      res.redirect('/');
+    });
+  });
+});
+
+// Admin panel route (protected)
+app.get('/admin', requireAdmin, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Small helper for the front-end to know who is logged in
+app.get('/api/me', (req, res) => {
+  if (!isAdminSession(req)) {
+    return res.status(401).json({ authenticated: false });
+  }
+
+  res.json({
+    authenticated: true,
+    user: {
+      id: req.user.id,
+      username: req.user.username,
+      discriminator: req.user.discriminator
+    }
+  });
+});
+
+// ---------------------------
+// Start HTTP server
+// ---------------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 Admin dashboard listening on port ${PORT}`);
+});
+
+// ---------------------------
 // Slash command definitions
 // ---------------------------
 const commands = [
-  // /setup-app-panel - HC/Staff only, posts the Apply buttons
+  // /setup-app-panel
   new SlashCommandBuilder()
     .setName('setup-app-panel')
     .setDescription('Post the application panel with apply buttons.')
@@ -406,7 +526,7 @@ client.once(Events.ClientReady, async readyClient => {
     console.error('❌ Error registering commands:', error);
   }
 
-  // Try to sync duty board on startup
+  // Sync duty board on startup
   try {
     const guild = await client.guilds.fetch(config.guildId);
     await updateDutyBoard(guild);
@@ -416,14 +536,14 @@ client.once(Events.ClientReady, async readyClient => {
 });
 
 // ---------------------------
-// INTERACTION HANDLER
+// Interaction handler
 // ---------------------------
 client.on(Events.InteractionCreate, async interaction => {
   // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // ----------------- /setup-app-panel -----------------
+    // /setup-app-panel
     if (commandName === 'setup-app-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       if (
@@ -482,18 +602,18 @@ client.on(Events.InteractionCreate, async interaction => {
         )
         .setColor(0x00aeff);
 
-      const channel = config.applicationPanel?.channelId
+      const panelChannel = config.applicationPanel?.channelId
         ? await interaction.guild.channels.fetch(config.applicationPanel.channelId)
         : interaction.channel;
 
-      await channel.send({ embeds: [embed], components: [row, row2] });
+      await panelChannel.send({ embeds: [embed], components: [row, row2] });
       return interaction.reply({
         content: '✅ Application panel posted.',
         ephemeral: true
       });
     }
 
-    // ----------------- /app approve / deny -----------------
+    // /app approve / deny
     if (commandName === 'app') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -516,14 +636,16 @@ client.on(Events.InteractionCreate, async interaction => {
           : null;
 
         // Role changes
-        if (config.roles.applicantRoleId && guildMember.roles.cache.has(config.roles.applicantRoleId)) {
+        if (
+          config.roles.applicantRoleId &&
+          guildMember.roles.cache.has(config.roles.applicantRoleId)
+        ) {
           await guildMember.roles.remove(config.roles.applicantRoleId).catch(() => {});
         }
         if (config.roles.cadetRoleId) {
           await guildMember.roles.add(config.roles.cadetRoleId).catch(() => {});
         }
 
-        // DM the user
         try {
           await user.send(
             `✅ Your application to SALEA (**${division}**) has been **approved**. ` +
@@ -533,7 +655,6 @@ client.on(Events.InteractionCreate, async interaction => {
           // ignore DM failures
         }
 
-        // Log
         const embed = new EmbedBuilder()
           .setTitle('Application Approved')
           .setColor(0x00ff00)
@@ -574,7 +695,6 @@ client.on(Events.InteractionCreate, async interaction => {
           ? updateApplicationStatus(latestApp.id, 'denied', interaction.user.id, reason)
           : null;
 
-        // DM the user
         try {
           await user.send(
             `❌ Your application to SALEA has been **denied**.\n` +
@@ -584,7 +704,6 @@ client.on(Events.InteractionCreate, async interaction => {
           // ignore DM failures
         }
 
-        // Log
         const embed = new EmbedBuilder()
           .setTitle('Application Denied')
           .setColor(0xff0000)
@@ -617,7 +736,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // ----------------- /ticket open / close -----------------
+    // /ticket open / close
     if (commandName === 'ticket') {
       const sub = interaction.options.getSubcommand();
 
@@ -746,7 +865,9 @@ client.on(Events.InteractionCreate, async interaction => {
         const ticket = closeTicket(channel.id);
 
         const messages = await channel.messages.fetch({ limit: 100 });
-        const sorted = [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const sorted = [...messages.values()].sort(
+          (a, b) => a.createdTimestamp - b.createdTimestamp
+        );
         const lines = sorted.map(
           m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content}`
         );
@@ -757,7 +878,6 @@ client.on(Events.InteractionCreate, async interaction => {
         const buffer = Buffer.from(transcriptText, 'utf8');
         const attachment = new AttachmentBuilder(buffer, { name: `ticket-${channel.id}.txt` });
 
-        // Send transcript to log channel
         try {
           const logChannel = await interaction.client.channels.fetch(
             config.channels.ticketTranscriptChannelId
@@ -794,7 +914,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // ----------------- /clock -----------------
+    // /clock
     if (commandName === 'clock') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -856,7 +976,6 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const duration = session.clockOut - session.clockIn;
 
-        // Remove on-duty role if configured
         if (config.roles.onDutyRoleId) {
           try {
             await member.roles.remove(config.roles.onDutyRoleId);
@@ -865,7 +984,6 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
 
-        // Update duty board
         await updateDutyBoard(interaction.guild);
 
         await interaction.reply({
@@ -895,7 +1013,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // ----------------- /activity -----------------
+    // /activity
     if (commandName === 'activity') {
       const sub = interaction.options.getSubcommand();
 
@@ -965,10 +1083,12 @@ client.on(Events.InteractionCreate, async interaction => {
         const totals = {};
         for (const s of sessions) {
           if (!totals[s.userId]) totals[s.userId] = 0;
-          totals[s.userId] += (s.clockOut - s.clockIn);
+          totals[s.userId] += s.clockOut - s.clockIn;
         }
 
-        const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        const sorted = Object.entries(totals)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10);
 
         if (sorted.length === 0) {
           return interaction.reply({
@@ -1085,7 +1205,6 @@ client.on(Events.InteractionCreate, async interaction => {
         decisionReason: null
       });
 
-      // Give applicant role if configured
       if (config.roles.applicantRoleId) {
         const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
         if (member && !member.roles.cache.has(config.roles.applicantRoleId)) {
@@ -1093,7 +1212,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
       }
 
-      // Log in applications channel
       const embed = new EmbedBuilder()
         .setTitle(`New Application - ${divisionName}`)
         .setColor(0x00ae86)
