@@ -28,6 +28,8 @@ const {
   addApplication,
   updateApplicationStatus,
   getLatestApplicationForUser,
+  getApplications,
+  getApplicationById,
   addTicket,
   closeTicket,
   getTickets,
@@ -107,7 +109,6 @@ async function updateDutyBoard(guild) {
   }
 
   const sessions = getAllOpenSessions();
-
   let content;
   if (!sessions || sessions.length === 0) {
     content = '📋 **On Duty Board**\nNo one is currently clocked in.';
@@ -157,7 +158,6 @@ async function postApplicationsPanel(channel) {
 
   const msg = await channel.send({ embeds: [embed], components: [row1, row2] });
 
-  // mark this channel as having a sticky application panel
   setStickyPanel(channel.id, 'applications');
   return msg;
 }
@@ -171,12 +171,103 @@ async function repostStickyPanel(message) {
   if (sticky.panelType === 'applications') {
     await postApplicationsPanel(channel);
   }
-  // in future: if you add sticky panels for other types, handle here:
-  // if (sticky.panelType === 'requests') { ... }
-  // if (sticky.panelType === 'reports') { ... }
 }
 
-// ----------------- Commands -----------------
+// ----------------- Application decision helpers -----------------
+async function processAppApprove(app, approverId) {
+  if (!app) throw new Error('Application not found');
+  const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
+  if (!guild) throw new Error('Guild not found');
+
+  const member = await guild.members.fetch(app.userId).catch(() => null);
+  const user = await client.users.fetch(app.userId).catch(() => null);
+
+  const updated = updateApplicationStatus(app.id, 'approved', approverId, app.division);
+
+  if (member) {
+    if (config.roles.applicantRoleId && member.roles.cache.has(config.roles.applicantRoleId)) {
+      await member.roles.remove(config.roles.applicantRoleId).catch(() => {});
+    }
+    if (config.roles.cadetRoleId) {
+      await member.roles.add(config.roles.cadetRoleId).catch(() => {});
+    }
+  }
+
+  if (user) {
+    try {
+      await user.send(
+        `✅ Your application to SALEA (**${app.division}**) has been **approved**. ` +
+        `Welcome aboard as a Cadet!`
+      );
+    } catch {}
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Application Approved')
+    .setColor(0x00ff00)
+    .addFields(
+      { name: 'Applicant', value: `<@${app.userId}> (${app.userId})`, inline: false },
+      { name: 'Division', value: app.division || 'N/A', inline: true },
+      { name: 'Approved By', value: `<@${approverId}>`, inline: true }
+    )
+    .setFooter({ text: `Application ID: ${app.id}` })
+    .setTimestamp(new Date());
+
+  try {
+    const channel = await client.channels.fetch(config.channels.applicationsChannelId);
+    if (channel && channel.isTextBased()) {
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('Error logging application approval:', err);
+  }
+
+  return updated;
+}
+
+async function processAppDeny(app, approverId, reason) {
+  if (!app) throw new Error('Application not found');
+  const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
+  if (!guild) throw new Error('Guild not found');
+
+  const user = await client.users.fetch(app.userId).catch(() => null);
+
+  const updated = updateApplicationStatus(app.id, 'denied', approverId, reason);
+
+  if (user) {
+    try {
+      await user.send(
+        `❌ Your application to SALEA (**${app.division}**) has been **denied**.\n` +
+        `Reason: ${reason || 'No reason provided.'}`
+      );
+    } catch {}
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Application Denied')
+    .setColor(0xff0000)
+    .addFields(
+      { name: 'Applicant', value: `<@${app.userId}> (${app.userId})`, inline: false },
+      { name: 'Division', value: app.division || 'N/A', inline: true },
+      { name: 'Denied By', value: `<@${approverId}>`, inline: true },
+      { name: 'Reason', value: reason || 'No reason provided', inline: false }
+    )
+    .setFooter({ text: `Application ID: ${app.id}` })
+    .setTimestamp(new Date());
+
+  try {
+    const channel = await client.channels.fetch(config.channels.applicationsChannelId);
+    if (channel && channel.isTextBased()) {
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('Error logging application denial:', err);
+  }
+
+  return updated;
+}
+
+// ----------------- Slash command definitions -----------------
 const commands = [
   new SlashCommandBuilder()
     .setName('setup-app-panel')
@@ -350,9 +441,9 @@ client.once(Events.ClientReady, async readyClient => {
   }
 });
 
-// ----------------- Interactions -----------------
+// ----------------- Interaction handler -----------------
 client.on(Events.InteractionCreate, async interaction => {
-  // slash commands
+  // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
@@ -385,42 +476,18 @@ client.on(Events.InteractionCreate, async interaction => {
       if (sub === 'approve') {
         const user = interaction.options.getUser('user');
         const division = interaction.options.getString('division');
-        const guildMember = await interaction.guild.members.fetch(user.id);
 
         const latestApp = getLatestApplicationForUser(user.id);
-        const appRecord = latestApp
-          ? updateApplicationStatus(latestApp.id, 'approved', interaction.user.id, division)
-          : null;
-
-        if (config.roles.applicantRoleId && guildMember.roles.cache.has(config.roles.applicantRoleId)) {
-          await guildMember.roles.remove(config.roles.applicantRoleId).catch(() => {});
-        }
-        if (config.roles.cadetRoleId) {
-          await guildMember.roles.add(config.roles.cadetRoleId).catch(() => {});
+        if (!latestApp) {
+          return interaction.reply({
+            content: '⚠️ No application found for that user.',
+            ephemeral: true
+          });
         }
 
-        try {
-          await user.send(`✅ Your application to SALEA (**${division}**) has been **approved**. Welcome aboard as a Cadet!`);
-        } catch {}
-
-        const embed = new EmbedBuilder()
-          .setTitle('Application Approved')
-          .setColor(0x00ff00)
-          .addFields(
-            { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
-            { name: 'Division', value: division, inline: true },
-            { name: 'Approved By', value: `<@${interaction.user.id}>`, inline: true }
-          )
-          .setTimestamp(new Date());
-
-        if (appRecord) embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-
-        try {
-          const channel = await interaction.client.channels.fetch(config.channels.applicationsChannelId);
-          if (channel && channel.isTextBased()) await channel.send({ embeds: [embed] });
-        } catch (err) {
-          console.error('Error logging application approval:', err);
-        }
+        // override division in the record
+        latestApp.division = division;
+        await processAppApprove(latestApp, interaction.user.id);
 
         return interaction.reply({
           content: `✅ Approved application for ${user} into **${division}**.`,
@@ -433,34 +500,19 @@ client.on(Events.InteractionCreate, async interaction => {
         const reason = interaction.options.getString('reason');
 
         const latestApp = getLatestApplicationForUser(user.id);
-        const appRecord = latestApp
-          ? updateApplicationStatus(latestApp.id, 'denied', interaction.user.id, reason)
-          : null;
-
-        try {
-          await user.send(`❌ Your application to SALEA has been **denied**.\nReason: ${reason}`);
-        } catch {}
-
-        const embed = new EmbedBuilder()
-          .setTitle('Application Denied')
-          .setColor(0xff0000)
-          .addFields(
-            { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
-            { name: 'Denied By', value: `<@${interaction.user.id}>`, inline: true },
-            { name: 'Reason', value: reason, inline: false }
-          )
-          .setTimestamp(new Date());
-
-        if (appRecord) embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-
-        try {
-          const channel = await interaction.client.channels.fetch(config.channels.applicationsChannelId);
-          if (channel && channel.isTextBased()) await channel.send({ embeds: [embed] });
-        } catch (err) {
-          console.error('Error logging application denial:', err);
+        if (!latestApp) {
+          return interaction.reply({
+            content: '⚠️ No application found for that user.',
+            ephemeral: true
+          });
         }
 
-        return interaction.reply({ content: `✅ Denied application for ${user}.`, ephemeral: true });
+        await processAppDeny(latestApp, interaction.user.id, reason);
+
+        return interaction.reply({
+          content: `✅ Denied application for ${user}.`,
+          ephemeral: true
+        });
       }
     }
 
@@ -674,7 +726,6 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        // assign on-duty role if configured
         if (config.roles.onDutyRoleId) {
           await member.roles.add(config.roles.onDutyRoleId).catch(() => {});
         }
@@ -821,9 +872,11 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  // button interactions – application panel
+  // Button interactions
   if (interaction.isButton()) {
     const id = interaction.customId;
+
+    // application apply buttons
     if (id.startsWith('apply_')) {
       const divisionKey = id.replace('apply_', '');
       let divisionName = 'Unknown';
@@ -868,12 +921,61 @@ client.on(Events.InteractionCreate, async interaction => {
         new ActionRowBuilder().addComponents(q4)
       );
 
-      await interaction.showModal(modal);
+      return interaction.showModal(modal);
+    }
+
+    // application decision buttons (in Discord log channel)
+    if (id.startsWith('app_decision_approve_') || id.startsWith('app_decision_deny_')) {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const isHC = hasAnyRole(member, config.roles.highCommandRoleIds || []);
+      if (!isHC) {
+        return interaction.reply({
+          content: '❌ Only High Command may decide applications.',
+          ephemeral: true
+        });
+      }
+
+      if (id.startsWith('app_decision_approve_')) {
+        const appId = id.replace('app_decision_approve_', '');
+        const appRecord = getApplicationById(appId);
+        if (!appRecord) {
+          return interaction.reply({ content: '⚠️ Application not found.', ephemeral: true });
+        }
+
+        await processAppApprove(appRecord, interaction.user.id);
+        return interaction.reply({
+          content: `✅ Application **${appId}** approved.`,
+          ephemeral: true
+        });
+      }
+
+      if (id.startsWith('app_decision_deny_')) {
+        const appId = id.replace('app_decision_deny_', '');
+        const appRecord = getApplicationById(appId);
+        if (!appRecord) {
+          return interaction.reply({ content: '⚠️ Application not found.', ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(`app_deny_modal_${appId}`)
+          .setTitle('Deny Application');
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('deny_reason')
+          .setLabel('Reason for denial')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+
+        return interaction.showModal(modal);
+      }
     }
   }
 
-  // modal submits – application form
+  // Modal submit – applications (apply + deny reason)
   if (interaction.isModalSubmit()) {
+    // application submission
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
       let divisionName = 'Unknown';
@@ -915,6 +1017,7 @@ client.on(Events.InteractionCreate, async interaction => {
         .setColor(0x00ae86)
         .addFields(
           { name: 'Applicant', value: `<@${interaction.user.id}> (${interaction.user.id})`, inline: false },
+          { name: 'Division', value: divisionName, inline: true },
           { name: 'Name', value: name, inline: false },
           { name: 'Age', value: age, inline: true },
           { name: 'Experience', value: exp || 'N/A', inline: false },
@@ -923,13 +1026,24 @@ client.on(Events.InteractionCreate, async interaction => {
         .setFooter({ text: `Application ID: ${app.id}` })
         .setTimestamp(new Date(app.createdAt));
 
+      const decisionRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`app_decision_approve_${app.id}`)
+          .setLabel('Approve')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`app_decision_deny_${app.id}`)
+          .setLabel('Deny')
+          .setStyle(ButtonStyle.Danger)
+      );
+
       try {
         const channel = await interaction.client.channels.fetch(config.channels.applicationsChannelId);
         if (channel && channel.isTextBased()) {
           const content = config.roles.hrRoleId
             ? `<@&${config.roles.hrRoleId}> New application received.`
             : 'New application received.';
-          await channel.send({ content, embeds: [embed] });
+          await channel.send({ content, embeds: [embed], components: [decisionRow] });
         }
       } catch (err) {
         console.error('Error sending application log:', err);
@@ -937,6 +1051,36 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Your application to **${divisionName}** has been submitted. A member of HR/High Command will review it.`,
+        ephemeral: true
+      });
+    }
+
+    // application denial modal (from Discord buttons)
+    if (interaction.customId.startsWith('app_deny_modal_')) {
+      const appId = interaction.customId.replace('app_deny_modal_', '');
+      const reason = interaction.fields.getTextInputValue('deny_reason');
+
+      const appRecord = getApplicationById(appId);
+      if (!appRecord) {
+        return interaction.reply({
+          content: '⚠️ Application not found.',
+          ephemeral: true
+        });
+      }
+
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const isHC = hasAnyRole(member, config.roles.highCommandRoleIds || []);
+      if (!isHC) {
+        return interaction.reply({
+          content: '❌ Only High Command may decide applications.',
+          ephemeral: true
+        });
+      }
+
+      await processAppDeny(appRecord, interaction.user.id, reason);
+
+      return interaction.reply({
+        content: `✅ Application **${appId}** denied.`,
         ephemeral: true
       });
     }
@@ -948,7 +1092,6 @@ client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
   const sticky = getStickyPanelForChannel(message.channelId);
   if (!sticky) return;
-  // re-post the panel so it stays last
   await repostStickyPanel(message);
 });
 
@@ -964,9 +1107,6 @@ app.use(
 );
 
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'salea-admin-secret';
-
-// Dummy Discord OAuth guard (we assume you already wired in Discord login in your existing admin.html flow)
-// Here we just check for a JWT cookie/header representing a logged-in admin.
 
 function discordAdminGuard(req, res, next) {
   const auth = req.headers.authorization || '';
@@ -985,7 +1125,7 @@ function discordAdminGuard(req, res, next) {
 // serve admin UI
 app.use('/admin', express.static(path.join(__dirname, 'public')));
 
-// Meta: guild/channels/roles (for dropdowns)
+// Meta: guild/channels/roles
 app.get('/admin/api/meta', discordAdminGuard, async (req, res) => {
   const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
   if (!guild) return res.status(500).json({ error: 'Guild not found' });
@@ -1008,6 +1148,42 @@ app.get('/admin/api/meta', discordAdminGuard, async (req, res) => {
     channels,
     roles
   });
+});
+
+// Applications list/detail/approve/deny
+app.get('/admin/api/apps', discordAdminGuard, (req, res) => {
+  res.json(getApplications());
+});
+
+app.get('/admin/api/apps/:id', discordAdminGuard, (req, res) => {
+  const appRec = getApplicationById(req.params.id);
+  if (!appRec) return res.status(404).json({ error: 'Not found' });
+  res.json(appRec);
+});
+
+app.post('/admin/api/apps/:id/approve', discordAdminGuard, async (req, res) => {
+  try {
+    const appRec = getApplicationById(req.params.id);
+    if (!appRec) return res.status(404).json({ error: 'Not found' });
+    const updated = await processAppApprove(appRec, req.adminUser.id || 'admin-panel');
+    res.json(updated);
+  } catch (e) {
+    console.error('Admin approve error:', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/admin/api/apps/:id/deny', discordAdminGuard, async (req, res) => {
+  try {
+    const appRec = getApplicationById(req.params.id);
+    if (!appRec) return res.status(404).json({ error: 'Not found' });
+    const reason = req.body.reason || 'Denied via admin panel';
+    const updated = await processAppDeny(appRec, req.adminUser.id || 'admin-panel', reason);
+    res.json(updated);
+  } catch (e) {
+    console.error('Admin deny error:', e);
+    res.status(500).json({ error: 'Internal error' });
+  }
 });
 
 // Tickets list/detail/done
