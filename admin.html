@@ -44,6 +44,7 @@
     }
     .pill.done { background: #14532d; color: #bbf7d0; }
     .pill.open { background: #7c2d12; color: #fed7aa; }
+    .pill.pending { background: #1d4ed8; color: #bfdbfe; }
     .checkbox-cell {
       text-align: center;
     }
@@ -71,14 +72,6 @@
       margin-right: 4px;
       color: #9ca3af;
     }
-    .badge {
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      background: #111827;
-      color: #e5e7eb;
-      margin-left: 6px;
-    }
     .section-title {
       display: flex;
       align-items: center;
@@ -87,6 +80,31 @@
     .section-title span {
       font-size: 12px;
       color: #6b7280;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font-size: 12px;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+    .btn-approve {
+      background: #14532d;
+      color: #bbf7d0;
+      border-color: #166534;
+    }
+    .btn-deny {
+      background: #7c2d12;
+      color: #fed7aa;
+      border-color: #9a3412;
+    }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: default;
     }
   </style>
 </head>
@@ -99,6 +117,25 @@
   <main>
     <div class="column">
       <div class="section">
+        <div class="section-title">
+          <h2>Applications</h2>
+          <span id="appsCount"></span>
+        </div>
+        <table id="appsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>User</th>
+              <th>Division</th>
+              <th>Status</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="section" style="margin-top:20px;">
         <div class="section-title">
           <h2>Tickets</h2>
           <span id="ticketsCount"></span>
@@ -161,7 +198,7 @@
       <h2>Detail</h2>
       <div id="detailContent">
         <p style="font-size:13px;color:#9ca3af;">
-          Click any ticket, report, or request to view full details here.
+          Click any application, ticket, report, or request to view full details here.
         </p>
       </div>
     </div>
@@ -169,7 +206,7 @@
 
   <script>
     const API_BASE = '/admin/api';
-    const token = localStorage.getItem('adminToken'); // your JWT from login flow
+    const token = localStorage.getItem('adminToken'); // your JWT from login
 
     if (!token) {
       alert('Missing admin token. Please log in through your admin auth flow.');
@@ -204,7 +241,7 @@
       return d.toLocaleString();
     }
 
-    function setDetail(title, meta, body) {
+    function setDetail(title, meta, body, actionsHtml) {
       const el = document.getElementById('detailContent');
       el.innerHTML = '';
       const h = document.createElement('h3');
@@ -221,6 +258,13 @@
           metaDiv.appendChild(span);
         });
         el.appendChild(metaDiv);
+      }
+
+      if (actionsHtml) {
+        const actionsDiv = document.createElement('div');
+        actionsDiv.innerHTML = actionsHtml;
+        actionsDiv.style.marginBottom = '8px';
+        el.appendChild(actionsDiv);
       }
 
       if (body) {
@@ -240,6 +284,122 @@
       }
     }
 
+    // -------- Applications --------
+    async function loadApps() {
+      const data = await apiGet('/apps');
+      const tbody = document.querySelector('#appsTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('appsCount').textContent = `${data.length} total`;
+
+      data
+        .slice()
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .forEach(app => {
+          const tr = document.createElement('tr');
+          tr.dataset.id = app.id;
+
+          const tdId = document.createElement('td');
+          tdId.textContent = app.id;
+          tr.appendChild(tdId);
+
+          const tdUser = document.createElement('td');
+          tdUser.textContent = app.userId || 'N/A';
+          tr.appendChild(tdUser);
+
+          const tdDiv = document.createElement('td');
+          tdDiv.textContent = app.division || 'N/A';
+          tr.appendChild(tdDiv);
+
+          const tdStatus = document.createElement('td');
+          const span = document.createElement('span');
+          span.className = 'pill';
+          if (app.status === 'approved') span.classList.add('done');
+          else if (app.status === 'denied') span.classList.add('open');
+          else span.classList.add('pending');
+          span.textContent =
+            app.status === 'approved'
+              ? 'Approved'
+              : app.status === 'denied'
+              ? 'Denied'
+              : 'Pending';
+          tdStatus.appendChild(span);
+          tr.appendChild(tdStatus);
+
+          const tdCreated = document.createElement('td');
+          tdCreated.textContent = formatDate(app.createdAt);
+          tr.appendChild(tdCreated);
+
+          tr.addEventListener('click', async () => {
+            try {
+              const full = await apiGet(`/apps/${app.id}`);
+              const actions =
+                full.status === 'pending'
+                  ? `
+                    <button class="btn btn-approve" id="btnAppApprove">Approve</button>
+                    <button class="btn btn-deny" id="btnAppDeny">Deny</button>
+                  `
+                  : '';
+
+              setDetail(
+                `Application ${full.id}`,
+                [
+                  { label: 'User', value: full.userId || 'N/A' },
+                  { label: 'Division', value: full.division || 'N/A' },
+                  { label: 'Status', value: full.status || 'pending' },
+                  { label: 'Created', value: formatDate(full.createdAt) },
+                  { label: 'Decided', value: full.decidedAt ? formatDate(full.decidedAt) : 'N/A' },
+                  { label: 'Decided By', value: full.decidedBy || 'N/A' }
+                ],
+                JSON.stringify(full.answers || {}, null, 2),
+                actions
+              );
+
+              if (actions) {
+                const btnApprove = document.getElementById('btnAppApprove');
+                const btnDeny = document.getElementById('btnAppDeny');
+
+                btnApprove.addEventListener('click', async () => {
+                  btnApprove.disabled = true;
+                  btnDeny.disabled = true;
+                  try {
+                    await apiPost(`/apps/${full.id}/approve`, {});
+                    await loadApps();
+                  } catch (e) {
+                    console.error(e);
+                    alert('Failed to approve application');
+                  } finally {
+                    btnApprove.disabled = false;
+                    btnDeny.disabled = false;
+                  }
+                });
+
+                btnDeny.addEventListener('click', async () => {
+                  const reason = prompt('Enter denial reason:');
+                  if (!reason) return;
+                  btnApprove.disabled = true;
+                  btnDeny.disabled = true;
+                  try {
+                    await apiPost(`/apps/${full.id}/deny`, { reason });
+                    await loadApps();
+                  } catch (e) {
+                    console.error(e);
+                    alert('Failed to deny application');
+                  } finally {
+                    btnApprove.disabled = false;
+                    btnDeny.disabled = false;
+                  }
+                });
+              }
+            } catch (e) {
+              console.error(e);
+            }
+          });
+
+          tbody.appendChild(tr);
+        });
+    }
+
+    // -------- Tickets --------
     async function loadTickets() {
       const data = await apiGet('/tickets');
       const tbody = document.querySelector('#ticketsTable tbody');
@@ -315,6 +475,7 @@
       });
     }
 
+    // -------- Reports --------
     async function loadReports() {
       const data = await apiGet('/reports');
       const tbody = document.querySelector('#reportsTable tbody');
@@ -381,6 +542,7 @@
       });
     }
 
+    // -------- Requests --------
     async function loadRequests() {
       const data = await apiGet('/requests');
       const tbody = document.querySelector('#requestsTable tbody');
@@ -450,6 +612,7 @@
     async function init() {
       if (!token) return;
       await loadMeta();
+      await loadApps();
       await loadTickets();
       await loadReports();
       await loadRequests();
