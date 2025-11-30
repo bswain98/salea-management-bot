@@ -1,8 +1,9 @@
 // index.js
+// Core imports
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
-const jwt = require('jsonwebtoken');
+
 const {
   Client,
   GatewayIntentBits,
@@ -27,51 +28,71 @@ const {
   addApplication,
   updateApplicationStatus,
   getLatestApplicationForUser,
-  getApplications,
-  getApplicationById,
   addTicket,
   closeTicket,
-  getTickets,
-  getTicketById,
-  setTicketDone,
   clockIn,
   clockOut,
   getOpenSession,
-  getAllOpenSessions,
   getSessionsForUserInRange,
   getSessionsInRange,
-  addReport,
-  getReports,
-  getReportById,
-  setReportDone,
-  addRequest,
-  getRequests,
-  getRequestById,
-  setRequestDone,
-  setStickyPanel,
-  getStickyPanelForChannel
+  getAllOpenSessions
 } = require('./storage');
 
 const config = require('./config.json');
 
+// ---------------------------
+// Express app (admin panel)
+// ---------------------------
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Serve static files (admin.html, JS, CSS, etc.) from /public
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Simple session (can be upgraded later)
+app.use(
+  session({
+    secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
+    resave: false,
+    saveUninitialized: false
+  })
+);
+
+// Admin panel route – serves public/admin.html
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Start HTTP server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 Admin dashboard listening on port ${PORT}`);
+});
+
+// ---------------------------
 // Discord client
+// ---------------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMembers
   ],
-  partials: [Partials.Channel, Partials.Message]
+  partials: [Partials.Channel]
 });
 
 let dutyBoardMessageId = null;
 
-// ----------------- Utility helpers -----------------
+// ---------------------------
+// Utility functions
+// ---------------------------
 function msToHuman(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
+
   const parts = [];
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
@@ -81,14 +102,16 @@ function msToHuman(ms) {
 
 function getRangeStart(range) {
   const now = Date.now();
-  const day = 24 * 60 * 60 * 1000;
+  const oneDay = 24 * 60 * 60 * 1000;
   if (range === 'today') {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today.getTime();
+  } else if (range === 'week') {
+    return now - 7 * oneDay;
+  } else if (range === 'month') {
+    return now - 30 * oneDay;
   }
-  if (range === 'week') return now - 7 * day;
-  if (range === 'month') return now - 30 * day;
   return 0;
 }
 
@@ -96,31 +119,57 @@ function hasAnyRole(member, roleIds) {
   return roleIds.some(id => member.roles.cache.has(id));
 }
 
-// ----------------- Duty board -----------------
+// On-duty board updater
 async function updateDutyBoard(guild) {
-  const channelId = config.channels.clockStatusChannelId;
-  if (!channelId) return;
+  const channelIdRaw = config.channels?.clockStatusChannelId;
+  if (!channelIdRaw) {
+    console.log('[DutyBoard] No clockStatusChannelId configured.');
+    return;
+  }
+
+  // Ensure we only use a numeric ID (in case someone pasted a URL)
+  const match = channelIdRaw.match(/\d{15,}/);
+  const channelId = match ? match[0] : channelIdRaw;
+
+  console.log('[DutyBoard] Using channel ID:', channelId);
 
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) {
-    console.warn('[DutyBoard] Channel not found for ID:', channelId);
+    console.log('[DutyBoard] Channel not found or not text-based for ID:', channelId);
     return;
   }
 
   const sessions = getAllOpenSessions();
-  let content;
   if (!sessions || sessions.length === 0) {
-    content = '📋 **On Duty Board**\nNo one is currently clocked in.';
-  } else {
-    const lines = sessions.map(s => {
-      const assignments = Array.isArray(s.assignments) ? s.assignments : [];
-      const assignmentsText = assignments.length ? assignments.join(', ') : 'Unspecified';
-      const startedUnix = Math.floor(s.clockIn / 1000);
-      const elapsed = msToHuman(Date.now() - s.clockIn);
-      return `• <@${s.userId}> – **${assignmentsText}** – on duty since <t:${startedUnix}:R> (**${elapsed}**)`;
-    });
-    content = '📋 **On Duty Board**\n' + lines.join('\n');
+    const content = '📋 **On Duty Board**\nNo one is currently clocked in.';
+    if (dutyBoardMessageId) {
+      const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
+      if (msg) {
+        await msg.edit(content).catch(() => {});
+        return;
+      }
+    }
+    const newMsg = await channel.send(content);
+    dutyBoardMessageId = newMsg.id;
+    return;
   }
+
+  const lines = sessions.map(s => {
+    const assignments = Array.isArray(s.assignments)
+      ? s.assignments
+      : s.assignment
+      ? [s.assignment]
+      : [];
+
+    const assignmentsText = assignments.length > 0 ? assignments.join(', ') : 'Unspecified';
+    const startedUnix = Math.floor(s.clockIn / 1000);
+    const elapsed = msToHuman(Date.now() - s.clockIn);
+
+    return `• <@${s.userId}> – **${assignmentsText}** – on duty since <t:${startedUnix}:R> (**${elapsed}**)`;
+  });
+
+  const header = '📋 **On Duty Board**';
+  const content = `${header}\n${lines.join('\n')}`;
 
   if (dutyBoardMessageId) {
     const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
@@ -134,145 +183,17 @@ async function updateDutyBoard(guild) {
   dutyBoardMessageId = newMsg.id;
 }
 
-// ----------------- Sticky panels -----------------
-async function postApplicationsPanel(channel) {
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('apply_patrol').setLabel('Apply - Patrol').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('apply_cid').setLabel('Apply - CID').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('apply_srt').setLabel('Apply - SRT').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('apply_traffic').setLabel('Apply - Traffic Unit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('apply_reaper').setLabel('Apply - REAPER').setStyle(ButtonStyle.Secondary)
-  );
-
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('apply_ia').setLabel('Apply - IA').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('apply_dispatch').setLabel('Apply - Dispatch').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('apply_training').setLabel('Apply - Training Staff').setStyle(ButtonStyle.Secondary)
-  );
-
-  const embed = new EmbedBuilder()
-    .setTitle('SALEA Applications')
-    .setDescription('Click the appropriate button below to submit an application.\n\nPlease be honest and detailed in your responses.')
-    .setColor(0x00aeff);
-
-  const msg = await channel.send({ embeds: [embed], components: [row1, row2] });
-
-  setStickyPanel(channel.id, 'applications');
-  return msg;
-}
-
-async function repostStickyPanel(message) {
-  const sticky = getStickyPanelForChannel(message.channelId);
-  if (!sticky) return;
-  const channel = message.channel;
-  if (!channel || !channel.isTextBased()) return;
-
-  if (sticky.panelType === 'applications') {
-    await postApplicationsPanel(channel);
-  }
-}
-
-// ----------------- Application decision helpers -----------------
-async function processAppApprove(app, approverId) {
-  if (!app) throw new Error('Application not found');
-  const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
-  if (!guild) throw new Error('Guild not found');
-
-  const member = await guild.members.fetch(app.userId).catch(() => null);
-  const user = await client.users.fetch(app.userId).catch(() => null);
-
-  const updated = updateApplicationStatus(app.id, 'approved', approverId, app.division);
-
-  if (member) {
-    if (config.roles.applicantRoleId && member.roles.cache.has(config.roles.applicantRoleId)) {
-      await member.roles.remove(config.roles.applicantRoleId).catch(() => {});
-    }
-    if (config.roles.cadetRoleId) {
-      await member.roles.add(config.roles.cadetRoleId).catch(() => {});
-    }
-  }
-
-  if (user) {
-    try {
-      await user.send(
-        `✅ Your application to SALEA (**${app.division}**) has been **approved**. ` +
-        `Welcome aboard as a Cadet!`
-      );
-    } catch {}
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('Application Approved')
-    .setColor(0x00ff00)
-    .addFields(
-      { name: 'Applicant', value: `<@${app.userId}> (${app.userId})`, inline: false },
-      { name: 'Division', value: app.division || 'N/A', inline: true },
-      { name: 'Approved By', value: `<@${approverId}>`, inline: true }
-    )
-    .setFooter({ text: `Application ID: ${app.id}` })
-    .setTimestamp(new Date());
-
-  try {
-    const channel = await client.channels.fetch(config.channels.applicationsChannelId);
-    if (channel && channel.isTextBased()) {
-      await channel.send({ embeds: [embed] });
-    }
-  } catch (err) {
-    console.error('Error logging application approval:', err);
-  }
-
-  return updated;
-}
-
-async function processAppDeny(app, approverId, reason) {
-  if (!app) throw new Error('Application not found');
-  const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
-  if (!guild) throw new Error('Guild not found');
-
-  const user = await client.users.fetch(app.userId).catch(() => null);
-
-  const updated = updateApplicationStatus(app.id, 'denied', approverId, reason);
-
-  if (user) {
-    try {
-      await user.send(
-        `❌ Your application to SALEA (**${app.division}**) has been **denied**.\n` +
-        `Reason: ${reason || 'No reason provided.'}`
-      );
-    } catch {}
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('Application Denied')
-    .setColor(0xff0000)
-    .addFields(
-      { name: 'Applicant', value: `<@${app.userId}> (${app.userId})`, inline: false },
-      { name: 'Division', value: app.division || 'N/A', inline: true },
-      { name: 'Denied By', value: `<@${approverId}>`, inline: true },
-      { name: 'Reason', value: reason || 'No reason provided', inline: false }
-    )
-    .setFooter({ text: `Application ID: ${app.id}` })
-    .setTimestamp(new Date());
-
-  try {
-    const channel = await client.channels.fetch(config.channels.applicationsChannelId);
-    if (channel && channel.isTextBased()) {
-      await channel.send({ embeds: [embed] });
-    }
-  } catch (err) {
-    console.error('Error logging application denial:', err);
-  }
-
-  return updated;
-}
-
-// ----------------- Slash command definitions -----------------
+// ---------------------------
+// Slash command definitions
+// ---------------------------
 const commands = [
+  // /setup-app-panel - HC/Staff only, posts the Apply buttons
   new SlashCommandBuilder()
     .setName('setup-app-panel')
     .setDescription('Post the application panel with apply buttons.')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
+  // /app approve / deny
   new SlashCommandBuilder()
     .setName('app')
     .setDescription('Application management.')
@@ -281,7 +202,10 @@ const commands = [
         .setName('approve')
         .setDescription('Approve the latest application for a user.')
         .addUserOption(opt =>
-          opt.setName('user').setDescription('Applicant to approve.').setRequired(true)
+          opt
+            .setName('user')
+            .setDescription('Applicant to approve.')
+            .setRequired(true)
         )
         .addStringOption(opt =>
           opt
@@ -293,7 +217,7 @@ const commands = [
               { name: 'CID', value: 'CID' },
               { name: 'SRT', value: 'SRT' },
               { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'REAPER', value: 'Reaper' },
+              { name: 'Reaper', value: 'Reaper' },
               { name: 'IA', value: 'IA' },
               { name: 'Dispatch', value: 'Dispatch' },
               { name: 'Training Staff', value: 'Training' }
@@ -305,13 +229,20 @@ const commands = [
         .setName('deny')
         .setDescription('Deny the latest application for a user.')
         .addUserOption(opt =>
-          opt.setName('user').setDescription('Applicant to deny.').setRequired(true)
+          opt
+            .setName('user')
+            .setDescription('Applicant to deny.')
+            .setRequired(true)
         )
         .addStringOption(opt =>
-          opt.setName('reason').setDescription('Reason for denial.').setRequired(true)
+          opt
+            .setName('reason')
+            .setDescription('Reason for denial.')
+            .setRequired(true)
         )
     ),
 
+  // /ticket open / close
   new SlashCommandBuilder()
     .setName('ticket')
     .setDescription('Ticket system.')
@@ -332,13 +263,19 @@ const commands = [
             )
         )
         .addStringOption(opt =>
-          opt.setName('subject').setDescription('Short description of your issue.').setRequired(true)
+          opt
+            .setName('subject')
+            .setDescription('Short description of your issue.')
+            .setRequired(true)
         )
     )
     .addSubcommand(sub =>
-      sub.setName('close').setDescription('Close this ticket channel (with transcript).')
+      sub
+        .setName('close')
+        .setDescription('Close this ticket channel (with transcript).')
     ),
 
+  // /clock in / out / status
   new SlashCommandBuilder()
     .setName('clock')
     .setDescription('Clock in and out of duty.')
@@ -348,14 +285,33 @@ const commands = [
         .setDescription('Clock in for duty.')
         .addStringOption(opt =>
           opt
-            .setName('assignments')
-            .setDescription('Comma-separated assignments (e.g. Patrol, Supervisor).')
+            .setName('assignment')
+            .setDescription('Select your unit or subdivision.')
             .setRequired(true)
+            .addChoices(
+              { name: 'Patrol', value: 'Patrol' },
+              { name: 'High Command', value: 'High Command' },
+              { name: 'Command', value: 'Command' },
+              { name: 'Traffic Unit', value: 'Traffic Unit' },
+              { name: 'Reaper', value: 'Reaper' },
+              { name: 'CID', value: 'CID' },
+              { name: 'IA', value: 'IA' },
+              { name: 'Supervisor', value: 'Supervisor' }
+            )
         )
     )
-    .addSubcommand(sub => sub.setName('out').setDescription('Clock out of duty.'))
-    .addSubcommand(sub => sub.setName('status').setDescription('Check your current clock-in status.')),
+    .addSubcommand(sub =>
+      sub
+        .setName('out')
+        .setDescription('Clock out of duty.')
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('status')
+        .setDescription('Check your current clock-in status.')
+    ),
 
+  // /activity self/member/top
   new SlashCommandBuilder()
     .setName('activity')
     .setDescription('View duty activity.')
@@ -380,7 +336,10 @@ const commands = [
         .setName('member')
         .setDescription('View duty time for another member.')
         .addUserOption(opt =>
-          opt.setName('user').setDescription('User to check.').setRequired(true)
+          opt
+            .setName('user')
+            .setDescription('User to check.')
+            .setRequired(true)
         )
         .addStringOption(opt =>
           opt
@@ -414,79 +373,191 @@ const commands = [
             .setName('assignment')
             .setDescription('Filter by assignment (optional).')
             .setRequired(false)
+            .addChoices(
+              { name: 'Patrol', value: 'Patrol' },
+              { name: 'High Command', value: 'High Command' },
+              { name: 'Command', value: 'Command' },
+              { name: 'Traffic Unit', value: 'Traffic Unit' },
+              { name: 'Reaper', value: 'Reaper' },
+              { name: 'CID', value: 'CID' },
+              { name: 'IA', value: 'IA' },
+              { name: 'Supervisor', value: 'Supervisor' }
+            )
         )
     )
-].map(c => c.toJSON());
+].map(cmd => cmd.toJSON());
 
-// ----------------- Slash registration -----------------
+// ---------------------------
+// Slash command registration
+// ---------------------------
 client.once(Events.ClientReady, async readyClient => {
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const rest = new REST({ version: '10' }).setToken(config.token);
+
   try {
     console.log('🔁 Refreshing application (slash) commands...');
     await rest.put(
-      Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID),
+      Routes.applicationGuildCommands(config.clientId, config.guildId),
       { body: commands }
     );
     console.log('✅ Slash commands registered.');
-  } catch (err) {
-    console.error('❌ Error registering commands:', err);
+  } catch (error) {
+    console.error('❌ Error registering commands:', error);
   }
 
-  const guild = readyClient.guilds.cache.get(process.env.DISCORD_GUILD_ID);
-  if (guild) {
+  // Try to sync duty board on startup
+  try {
+    const guild = await client.guilds.fetch(config.guildId);
     await updateDutyBoard(guild);
+  } catch (err) {
+    console.error('[DutyBoard] Failed to update on ready:', err);
   }
 });
 
-// ----------------- Interaction handler -----------------
+// ---------------------------
+// INTERACTION HANDLER
+// ---------------------------
 client.on(Events.InteractionCreate, async interaction => {
   // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // /setup-app-panel
+    // ----------------- /setup-app-panel -----------------
     if (commandName === 'setup-app-panel') {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       if (
         !member.permissions.has(PermissionFlagsBits.ManageGuild) &&
         !hasAnyRole(member, config.roles.highCommandRoleIds || [])
       ) {
-        return interaction.reply({ content: '❌ You do not have permission to use this.', ephemeral: true });
+        return interaction.reply({
+          content: '❌ You do not have permission to use this.',
+          ephemeral: true
+        });
       }
 
-      const channel = config.applicationPanel.channelId
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('apply_patrol')
+          .setLabel('Apply - Patrol')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('apply_cid')
+          .setLabel('Apply - CID')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('apply_srt')
+          .setLabel('Apply - SRT')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('apply_traffic')
+          .setLabel('Apply - Traffic Unit')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('apply_reaper')
+          .setLabel('Apply - Reaper')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('apply_ia')
+          .setLabel('Apply - IA')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('apply_dispatch')
+          .setLabel('Apply - Dispatch')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('apply_training')
+          .setLabel('Apply - Training Staff')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const embed = new EmbedBuilder()
+        .setTitle('SALEA Applications')
+        .setDescription(
+          'Click the appropriate button below to submit an application.\n\n' +
+          'Please be honest and detailed in your responses.'
+        )
+        .setColor(0x00aeff);
+
+      const channel = config.applicationPanel?.channelId
         ? await interaction.guild.channels.fetch(config.applicationPanel.channelId)
         : interaction.channel;
 
-      await postApplicationsPanel(channel);
-      return interaction.reply({ content: '✅ Application panel posted.', ephemeral: true });
+      await channel.send({ embeds: [embed], components: [row, row2] });
+      return interaction.reply({
+        content: '✅ Application panel posted.',
+        ephemeral: true
+      });
     }
 
-    // /app
+    // ----------------- /app approve / deny -----------------
     if (commandName === 'app') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
+
       if (!hasAnyRole(member, config.roles.highCommandRoleIds || [])) {
-        return interaction.reply({ content: '❌ Only High Command may manage applications.', ephemeral: true });
+        return interaction.reply({
+          content: '❌ Only High Command may manage applications.',
+          ephemeral: true
+        });
       }
 
       if (sub === 'approve') {
         const user = interaction.options.getUser('user');
         const division = interaction.options.getString('division');
+        const guildMember = await interaction.guild.members.fetch(user.id);
 
         const latestApp = getLatestApplicationForUser(user.id);
-        if (!latestApp) {
-          return interaction.reply({
-            content: '⚠️ No application found for that user.',
-            ephemeral: true
-          });
+        const appRecord = latestApp
+          ? updateApplicationStatus(latestApp.id, 'approved', interaction.user.id, division)
+          : null;
+
+        // Role changes
+        if (config.roles.applicantRoleId && guildMember.roles.cache.has(config.roles.applicantRoleId)) {
+          await guildMember.roles.remove(config.roles.applicantRoleId).catch(() => {});
+        }
+        if (config.roles.cadetRoleId) {
+          await guildMember.roles.add(config.roles.cadetRoleId).catch(() => {});
         }
 
-        // override division in the record
-        latestApp.division = division;
-        await processAppApprove(latestApp, interaction.user.id);
+        // DM the user
+        try {
+          await user.send(
+            `✅ Your application to SALEA (**${division}**) has been **approved**. ` +
+            `Welcome aboard as a Cadet!`
+          );
+        } catch {
+          // ignore DM failures
+        }
+
+        // Log
+        const embed = new EmbedBuilder()
+          .setTitle('Application Approved')
+          .setColor(0x00ff00)
+          .addFields(
+            { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
+            { name: 'Division', value: division, inline: true },
+            { name: 'Approved By', value: `<@${interaction.user.id}>`, inline: true }
+          )
+          .setTimestamp(new Date());
+
+        if (appRecord) {
+          embed.setFooter({ text: `Application ID: ${appRecord.id}` });
+        }
+
+        try {
+          const channel = await interaction.client.channels.fetch(
+            config.channels.applicationsChannelId
+          );
+          if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] });
+          }
+        } catch (err) {
+          console.error('Error logging application approval:', err);
+        }
 
         return interaction.reply({
           content: `✅ Approved application for ${user} into **${division}**.`,
@@ -499,14 +570,45 @@ client.on(Events.InteractionCreate, async interaction => {
         const reason = interaction.options.getString('reason');
 
         const latestApp = getLatestApplicationForUser(user.id);
-        if (!latestApp) {
-          return interaction.reply({
-            content: '⚠️ No application found for that user.',
-            ephemeral: true
-          });
+        const appRecord = latestApp
+          ? updateApplicationStatus(latestApp.id, 'denied', interaction.user.id, reason)
+          : null;
+
+        // DM the user
+        try {
+          await user.send(
+            `❌ Your application to SALEA has been **denied**.\n` +
+            `Reason: ${reason}`
+          );
+        } catch {
+          // ignore DM failures
         }
 
-        await processAppDeny(latestApp, interaction.user.id, reason);
+        // Log
+        const embed = new EmbedBuilder()
+          .setTitle('Application Denied')
+          .setColor(0xff0000)
+          .addFields(
+            { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
+            { name: 'Denied By', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Reason', value: reason, inline: false }
+          )
+          .setTimestamp(new Date());
+
+        if (appRecord) {
+          embed.setFooter({ text: `Application ID: ${appRecord.id}` });
+        }
+
+        try {
+          const channel = await interaction.client.channels.fetch(
+            config.channels.applicationsChannelId
+          );
+          if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] });
+          }
+        } catch (err) {
+          console.error('Error logging application denial:', err);
+        }
 
         return interaction.reply({
           content: `✅ Denied application for ${user}.`,
@@ -515,9 +617,10 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /ticket
+    // ----------------- /ticket open / close -----------------
     if (commandName === 'ticket') {
       const sub = interaction.options.getSubcommand();
+
       if (sub === 'open') {
         const type = interaction.options.getString('type');
         const subject = interaction.options.getString('subject');
@@ -591,14 +694,12 @@ client.on(Events.InteractionCreate, async interaction => {
         });
 
         addTicket({
-          id: `ticket_${ticketChannel.id}`,
           channelId: ticketChannel.id,
           userId: interaction.user.id,
           type,
           subject,
           createdAt: Date.now(),
-          closedAt: null,
-          done: false
+          closedAt: null
         });
 
         await interaction.reply({
@@ -608,12 +709,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await ticketChannel.send(
           `👋 Hello ${interaction.user}, a staff member will be with you shortly.\n` +
-            `**Type:** ${type}\n**Subject:** ${subject}`
+          `**Type:** ${type}\n**Subject:** ${subject}`
         );
       }
 
       if (sub === 'close') {
         const channel = interaction.channel;
+
         const validCategories = [
           config.categories.ticketGeneralCategoryId,
           config.categories.ticketIACategoryId,
@@ -653,10 +755,9 @@ client.on(Events.InteractionCreate, async interaction => {
           lines.length > 0 ? lines.join('\n') : 'No messages recorded in this ticket.';
 
         const buffer = Buffer.from(transcriptText, 'utf8');
-        const attachment = new AttachmentBuilder(buffer, {
-          name: `ticket-${channel.id}.txt`
-        });
+        const attachment = new AttachmentBuilder(buffer, { name: `ticket-${channel.id}.txt` });
 
+        // Send transcript to log channel
         try {
           const logChannel = await interaction.client.channels.fetch(
             config.channels.ticketTranscriptChannelId
@@ -667,7 +768,11 @@ client.on(Events.InteractionCreate, async interaction => {
               .setColor(0xffa500)
               .addFields(
                 { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
-                { name: 'Closed By', value: `<@${interaction.user.id}>`, inline: true },
+                {
+                  name: 'Closed By',
+                  value: `<@${interaction.user.id}>`,
+                  inline: true
+                },
                 {
                   name: 'Original User',
                   value: ticket ? `<@${ticket.userId}>` : 'Unknown',
@@ -689,10 +794,11 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /clock
+    // ----------------- /clock -----------------
     if (commandName === 'clock') {
       const sub = interaction.options.getSubcommand();
       const member = await interaction.guild.members.fetch(interaction.user.id);
+
       const swornRoles = config.roles.swornRoleIds || [];
       const isSworn = hasAnyRole(member, swornRoles);
       if (!isSworn) {
@@ -703,11 +809,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (sub === 'in') {
-        const rawAssignments = interaction.options.getString('assignments');
-        const assignments = rawAssignments
-          .split(',')
-          .map(s => s.trim())
-          .filter(Boolean);
+        const assignment = interaction.options.getString('assignment');
 
         const open = getOpenSession(interaction.user.id);
         if (open) {
@@ -717,7 +819,7 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const session = clockIn(interaction.user.id, assignments);
+        const session = clockIn(interaction.user.id, assignment);
         if (!session) {
           return interaction.reply({
             content: '⚠️ Could not clock you in (already in session?).',
@@ -725,16 +827,22 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
+        // Add on-duty role if configured
         if (config.roles.onDutyRoleId) {
-          await member.roles.add(config.roles.onDutyRoleId).catch(() => {});
+          try {
+            await member.roles.add(config.roles.onDutyRoleId);
+          } catch (err) {
+            console.error('Error adding on-duty role:', err);
+          }
         }
 
+        // Update duty board
+        await updateDutyBoard(interaction.guild);
+
         await interaction.reply({
-          content: `✅ You are now clocked in as **${assignments.join(', ')}**.`,
+          content: `✅ You are now clocked in as **${assignment}**.`,
           ephemeral: true
         });
-
-        await updateDutyBoard(interaction.guild);
       }
 
       if (sub === 'out') {
@@ -747,18 +855,23 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         const duration = session.clockOut - session.clockIn;
+
+        // Remove on-duty role if configured
         if (config.roles.onDutyRoleId) {
-          await member.roles.remove(config.roles.onDutyRoleId).catch(() => {});
+          try {
+            await member.roles.remove(config.roles.onDutyRoleId);
+          } catch (err) {
+            console.error('Error removing on-duty role:', err);
+          }
         }
 
+        // Update duty board
+        await updateDutyBoard(interaction.guild);
+
         await interaction.reply({
-          content: `✅ You are now clocked out. Session duration: **${msToHuman(
-            duration
-          )}**.`,
+          content: `✅ You are now clocked out. Session duration: **${msToHuman(duration)}**.`,
           ephemeral: true
         });
-
-        await updateDutyBoard(interaction.guild);
       }
 
       if (sub === 'status') {
@@ -771,12 +884,10 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         const duration = Date.now() - open.clockIn;
-        const unitsText = open.assignments && open.assignments.length
-          ? `Assignments: **${open.assignments.join(', ')}**\n`
-          : '';
+        const unitText = open.assignment ? `Assignment: **${open.assignment}**\n` : '';
         await interaction.reply({
           content:
-            `⏱️ You are currently clocked in.\n${unitsText}` +
+            `⏱️ You are currently clocked in.\n${unitText}` +
             `Started: <t:${Math.floor(open.clockIn / 1000)}:R>\n` +
             `Elapsed: **${msToHuman(duration)}**`,
           ephemeral: true
@@ -784,7 +895,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /activity
+    // ----------------- /activity -----------------
     if (commandName === 'activity') {
       const sub = interaction.options.getSubcommand();
 
@@ -792,7 +903,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const range = interaction.options.getString('range');
         const from = getRangeStart(range);
         const sessions = getSessionsForUserInRange(interaction.user.id, from);
-        const totalMs = sessions.reduce((sum, s) => sum + (s.clockOut - s.clockIn), 0);
+        const totalMs = sessions.reduce(
+          (sum, s) => sum + (s.clockOut - s.clockIn),
+          0
+        );
 
         return interaction.reply({
           content:
@@ -806,6 +920,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (sub === 'member') {
         const range = interaction.options.getString('range');
         const user = interaction.options.getUser('user');
+
         const member = await interaction.guild.members.fetch(interaction.user.id);
         const hcRoles = config.roles.highCommandRoleIds || [];
         if (!hasAnyRole(member, hcRoles)) {
@@ -817,7 +932,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const from = getRangeStart(range);
         const sessions = getSessionsForUserInRange(user.id, from);
-        const totalMs = sessions.reduce((sum, s) => sum + (s.clockOut - s.clockIn), 0);
+        const totalMs = sessions.reduce(
+          (sum, s) => sum + (s.clockOut - s.clockIn),
+          0
+        );
 
         return interaction.reply({
           content:
@@ -830,7 +948,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (sub === 'top') {
         const range = interaction.options.getString('range');
-        const assignmentFilter = interaction.options.getString('assignment') || null;
+        const assignment = interaction.options.getString('assignment') || null;
+
         const member = await interaction.guild.members.fetch(interaction.user.id);
         const hcRoles = config.roles.highCommandRoleIds || [];
         if (!hasAnyRole(member, hcRoles)) {
@@ -841,15 +960,15 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         const from = getRangeStart(range);
-        const sessions = getSessionsInRange(from, assignmentFilter);
+        const sessions = getSessionsInRange(from, assignment);
+
         const totals = {};
         for (const s of sessions) {
           if (!totals[s.userId]) totals[s.userId] = 0;
-          totals[s.userId] += s.clockOut - s.clockIn;
+          totals[s.userId] += (s.clockOut - s.clockIn);
         }
-        const sorted = Object.entries(totals)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 10);
+
+        const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 10);
 
         if (sorted.length === 0) {
           return interaction.reply({
@@ -858,9 +977,14 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const lines = sorted.map(([userId, ms], i) => `${i + 1}. <@${userId}> – **${msToHuman(ms)}**`);
-        const header = assignmentFilter
-          ? `Top duty time (${range}) for assignment **${assignmentFilter}**:`
+        const lines = await Promise.all(
+          sorted.map(async ([userId, ms], idx) => {
+            return `${idx + 1}. <@${userId}> – **${msToHuman(ms)}**`;
+          })
+        );
+
+        const header = assignment
+          ? `Top duty time (${range}) for assignment **${assignment}**:`
           : `Top duty time (${range}):`;
 
         return interaction.reply({
@@ -871,11 +995,9 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  // Button interactions
+  // Button interactions for application panel
   if (interaction.isButton()) {
     const id = interaction.customId;
-
-    // application apply buttons
     if (id.startsWith('apply_')) {
       const divisionKey = id.replace('apply_', '');
       let divisionName = 'Unknown';
@@ -883,7 +1005,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (divisionKey === 'cid') divisionName = 'CID';
       if (divisionKey === 'srt') divisionName = 'SRT';
       if (divisionKey === 'traffic') divisionName = 'Traffic Unit';
-      if (divisionKey === 'reaper') divisionName = 'REAPER';
+      if (divisionKey === 'reaper') divisionName = 'Reaper';
       if (divisionKey === 'ia') divisionName = 'IA';
       if (divisionKey === 'dispatch') divisionName = 'Dispatch';
       if (divisionKey === 'training') divisionName = 'Training Staff';
@@ -897,84 +1019,38 @@ client.on(Events.InteractionCreate, async interaction => {
         .setLabel('Your name (in-game & Discord)')
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
+
       const q2 = new TextInputBuilder()
         .setCustomId('q2_age')
         .setLabel('Your age (OOC)')
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
+
       const q3 = new TextInputBuilder()
         .setCustomId('q3_experience')
         .setLabel('LEO / RP experience')
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true);
+
       const q4 = new TextInputBuilder()
         .setCustomId('q4_availability')
         .setLabel('Availability / time zone')
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true);
 
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(q1),
-        new ActionRowBuilder().addComponents(q2),
-        new ActionRowBuilder().addComponents(q3),
-        new ActionRowBuilder().addComponents(q4)
-      );
+      const row1 = new ActionRowBuilder().addComponents(q1);
+      const row2 = new ActionRowBuilder().addComponents(q2);
+      const row3 = new ActionRowBuilder().addComponents(q3);
+      const row4 = new ActionRowBuilder().addComponents(q4);
 
-      return interaction.showModal(modal);
-    }
+      modal.addComponents(row1, row2, row3, row4);
 
-    // application decision buttons (in Discord log channel)
-    if (id.startsWith('app_decision_approve_') || id.startsWith('app_decision_deny_')) {
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-      const isHC = hasAnyRole(member, config.roles.highCommandRoleIds || []);
-      if (!isHC) {
-        return interaction.reply({
-          content: '❌ Only High Command may decide applications.',
-          ephemeral: true
-        });
-      }
-
-      if (id.startsWith('app_decision_approve_')) {
-        const appId = id.replace('app_decision_approve_', '');
-        const appRecord = getApplicationById(appId);
-        if (!appRecord) {
-          return interaction.reply({ content: '⚠️ Application not found.', ephemeral: true });
-        }
-
-        await processAppApprove(appRecord, interaction.user.id);
-        return interaction.reply({
-          content: `✅ Application **${appId}** approved.`,
-          ephemeral: true
-        });
-      }
-
-      if (id.startsWith('app_decision_deny_')) {
-        const appId = id.replace('app_decision_deny_', '');
-        const appRecord = getApplicationById(appId);
-        if (!appRecord) {
-          return interaction.reply({ content: '⚠️ Application not found.', ephemeral: true });
-        }
-
-        const modal = new ModalBuilder()
-          .setCustomId(`app_deny_modal_${appId}`)
-          .setTitle('Deny Application');
-
-        const reasonInput = new TextInputBuilder()
-          .setCustomId('deny_reason')
-          .setLabel('Reason for denial')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true);
-
-        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-
-        return interaction.showModal(modal);
-      }
+      await interaction.showModal(modal);
     }
   }
 
-  // Modal submit – applications (apply + deny reason)
+  // Modal submit for applications
   if (interaction.isModalSubmit()) {
-    // application submission
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
       let divisionName = 'Unknown';
@@ -982,7 +1058,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (divisionKey === 'cid') divisionName = 'CID';
       if (divisionKey === 'srt') divisionName = 'SRT';
       if (divisionKey === 'traffic') divisionName = 'Traffic Unit';
-      if (divisionKey === 'reaper') divisionName = 'REAPER';
+      if (divisionKey === 'reaper') divisionName = 'Reaper';
       if (divisionKey === 'ia') divisionName = 'IA';
       if (divisionKey === 'dispatch') divisionName = 'Dispatch';
       if (divisionKey === 'training') divisionName = 'Training Staff';
@@ -992,11 +1068,16 @@ client.on(Events.InteractionCreate, async interaction => {
       const exp = interaction.fields.getTextInputValue('q3_experience');
       const availability = interaction.fields.getTextInputValue('q4_availability');
 
-      const app = addApplication({
+      const appRecord = addApplication({
         id: `${interaction.user.id}-${Date.now()}`,
         userId: interaction.user.id,
         division: divisionName,
-        answers: { name, age, experience: exp, availability },
+        answers: {
+          name,
+          age,
+          experience: exp,
+          availability
+        },
         status: 'pending',
         createdAt: Date.now(),
         decidedAt: null,
@@ -1004,6 +1085,7 @@ client.on(Events.InteractionCreate, async interaction => {
         decisionReason: null
       });
 
+      // Give applicant role if configured
       if (config.roles.applicantRoleId) {
         const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
         if (member && !member.roles.cache.has(config.roles.applicantRoleId)) {
@@ -1011,38 +1093,29 @@ client.on(Events.InteractionCreate, async interaction => {
         }
       }
 
+      // Log in applications channel
       const embed = new EmbedBuilder()
         .setTitle(`New Application - ${divisionName}`)
         .setColor(0x00ae86)
         .addFields(
           { name: 'Applicant', value: `<@${interaction.user.id}> (${interaction.user.id})`, inline: false },
-          { name: 'Division', value: divisionName, inline: true },
           { name: 'Name', value: name, inline: false },
           { name: 'Age', value: age, inline: true },
           { name: 'Experience', value: exp || 'N/A', inline: false },
           { name: 'Availability', value: availability || 'N/A', inline: false }
         )
-        .setFooter({ text: `Application ID: ${app.id}` })
-        .setTimestamp(new Date(app.createdAt));
-
-      const decisionRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`app_decision_approve_${app.id}`)
-          .setLabel('Approve')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`app_decision_deny_${app.id}`)
-          .setLabel('Deny')
-          .setStyle(ButtonStyle.Danger)
-      );
+        .setFooter({ text: `Application ID: ${appRecord.id}` })
+        .setTimestamp(new Date(appRecord.createdAt));
 
       try {
-        const channel = await interaction.client.channels.fetch(config.channels.applicationsChannelId);
+        const channel = await interaction.client.channels.fetch(
+          config.channels.applicationsChannelId
+        );
         if (channel && channel.isTextBased()) {
           const content = config.roles.hrRoleId
             ? `<@&${config.roles.hrRoleId}> New application received.`
             : 'New application received.';
-          await channel.send({ content, embeds: [embed], components: [decisionRow] });
+          await channel.send({ content, embeds: [embed] });
         }
       } catch (err) {
         console.error('Error sending application log:', err);
@@ -1053,198 +1126,10 @@ client.on(Events.InteractionCreate, async interaction => {
         ephemeral: true
       });
     }
-
-    // application denial modal (from Discord buttons)
-    if (interaction.customId.startsWith('app_deny_modal_')) {
-      const appId = interaction.customId.replace('app_deny_modal_', '');
-      const reason = interaction.fields.getTextInputValue('deny_reason');
-
-      const appRecord = getApplicationById(appId);
-      if (!appRecord) {
-        return interaction.reply({
-          content: '⚠️ Application not found.',
-          ephemeral: true
-        });
-      }
-
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-      const isHC = hasAnyRole(member, config.roles.highCommandRoleIds || []);
-      if (!isHC) {
-        return interaction.reply({
-          content: '❌ Only High Command may decide applications.',
-          ephemeral: true
-        });
-      }
-
-      await processAppDeny(appRecord, interaction.user.id, reason);
-
-      return interaction.reply({
-        content: `✅ Application **${appId}** denied.`,
-        ephemeral: true
-      });
-    }
   }
 });
 
-// ----------------- Sticky handling on message -----------------
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) return;
-  const sticky = getStickyPanelForChannel(message.channelId);
-  if (!sticky) return;
-  await repostStickyPanel(message);
-});
-
-// ----------------- Admin API / dashboard -----------------
-const app = express();
-app.use(express.json());
-app.use(
-  session({
-    secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
-    resave: false,
-    saveUninitialized: false
-  })
-);
-
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'salea-admin-secret';
-
-function discordAdminGuard(req, res, next) {
-  const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const decoded = jwt.verify(token, ADMIN_JWT_SECRET);
-    req.adminUser = decoded;
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
-
-// serve admin UI
-app.use('/admin', express.static(path.join(__dirname, 'public')));
-
-// Meta: guild/channels/roles
-app.get('/admin/api/meta', discordAdminGuard, async (req, res) => {
-  const guild = client.guilds.cache.get(process.env.DISCORD_GUILD_ID);
-  if (!guild) return res.status(500).json({ error: 'Guild not found' });
-
-  await guild.channels.fetch();
-  await guild.roles.fetch();
-
-  const channels = guild.channels.cache
-    .filter(ch => ch.type === ChannelType.GuildText)
-    .map(ch => ({ id: ch.id, name: ch.name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  const roles = guild.roles.cache
-    .filter(r => !r.managed)
-    .map(r => ({ id: r.id, name: r.name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  res.json({
-    guild: { id: guild.id, name: guild.name },
-    channels,
-    roles
-  });
-});
-
-// Applications list/detail/approve/deny
-app.get('/admin/api/apps', discordAdminGuard, (req, res) => {
-  res.json(getApplications());
-});
-
-app.get('/admin/api/apps/:id', discordAdminGuard, (req, res) => {
-  const appRec = getApplicationById(req.params.id);
-  if (!appRec) return res.status(404).json({ error: 'Not found' });
-  res.json(appRec);
-});
-
-app.post('/admin/api/apps/:id/approve', discordAdminGuard, async (req, res) => {
-  try {
-    const appRec = getApplicationById(req.params.id);
-    if (!appRec) return res.status(404).json({ error: 'Not found' });
-    const updated = await processAppApprove(appRec, req.adminUser.id || 'admin-panel');
-    res.json(updated);
-  } catch (e) {
-    console.error('Admin approve error:', e);
-    res.status(500).json({ error: 'Internal error' });
-  }
-});
-
-app.post('/admin/api/apps/:id/deny', discordAdminGuard, async (req, res) => {
-  try {
-    const appRec = getApplicationById(req.params.id);
-    if (!appRec) return res.status(404).json({ error: 'Not found' });
-    const reason = req.body.reason || 'Denied via admin panel';
-    const updated = await processAppDeny(appRec, req.adminUser.id || 'admin-panel', reason);
-    res.json(updated);
-  } catch (e) {
-    console.error('Admin deny error:', e);
-    res.status(500).json({ error: 'Internal error' });
-  }
-});
-
-// Tickets list/detail/done
-app.get('/admin/api/tickets', discordAdminGuard, (req, res) => {
-  res.json(getTickets());
-});
-
-app.get('/admin/api/tickets/:id', discordAdminGuard, (req, res) => {
-  const t = getTicketById(req.params.id);
-  if (!t) return res.status(404).json({ error: 'Not found' });
-  res.json(t);
-});
-
-app.post('/admin/api/tickets/:id/done', discordAdminGuard, (req, res) => {
-  const done = !!req.body.done;
-  const t = setTicketDone(req.params.id, done);
-  if (!t) return res.status(404).json({ error: 'Not found' });
-  res.json(t);
-});
-
-// Reports list/detail/done
-app.get('/admin/api/reports', discordAdminGuard, (req, res) => {
-  res.json(getReports());
-});
-
-app.get('/admin/api/reports/:id', discordAdminGuard, (req, res) => {
-  const r = getReportById(req.params.id);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  res.json(r);
-});
-
-app.post('/admin/api/reports/:id/done', discordAdminGuard, (req, res) => {
-  const done = !!req.body.done;
-  const r = setReportDone(req.params.id, done);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  res.json(r);
-});
-
-// Requests list/detail/done
-app.get('/admin/api/requests', discordAdminGuard, (req, res) => {
-  res.json(getRequests());
-});
-
-app.get('/admin/api/requests/:id', discordAdminGuard, (req, res) => {
-  const r = getRequestById(req.params.id);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  res.json(r);
-});
-
-app.post('/admin/api/requests/:id/done', discordAdminGuard, (req, res) => {
-  const done = !!req.body.done;
-  const r = setRequestDone(req.params.id, done);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  res.json(r);
-});
-
-// Start web server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌐 Admin dashboard listening on port ${PORT}`);
-});
-
-// Start bot
-client.login(process.env.DISCORD_TOKEN);
-
+// ---------------------------
+// Start the bot
+// ---------------------------
+client.login(config.token);
