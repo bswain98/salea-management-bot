@@ -58,24 +58,16 @@ const client = new Client({
 });
 
 let dutyBoardMessageId = null;
-
-// Helper: wait until bot is ready
-function ensureClientReady() {
-  return new Promise(resolve => {
-    if (client.isReady && client.isReady()) return resolve();
-    client.once(Events.ClientReady, () => resolve());
-  });
-}
+let isBotReady = false;
 
 // ---------------------------
 // Express app (Admin panel)
 // ---------------------------
 const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Sessions (used for Discord OAuth)
+// Sessions (for Discord OAuth)
 app.use(
   session({
     secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
@@ -87,21 +79,16 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Serve static files for admin panel (public/admin.html, css, js)
+// Static admin assets
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------
 // Passport (Discord OAuth)
 // ---------------------------
-passport.serializeUser((user, done) => {
-  done(null, user);
-});
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
 
-passport.deserializeUser((obj, done) => {
-  done(null, obj);
-});
-
-// Use Render URL (env) or fallback to Render domain, not localhost
+// Use Render URL or fallback
 const CALLBACK_URL =
   process.env.DISCORD_CALLBACK_URL ||
   process.env.DASHBOARD_CALLBACK_URL ||
@@ -122,7 +109,7 @@ passport.use(
 );
 
 // ---------------------------
-// Utility functions
+// Utility helpers
 // ---------------------------
 function msToHuman(ms) {
   const totalSeconds = Math.floor(ms / 1000);
@@ -155,6 +142,14 @@ function hasAnyRole(member, roleIds) {
   return roleIds.some(id => member.roles.cache.has(id));
 }
 
+// Wait for bot to be ready (no weird isReady calls)
+function ensureClientReady() {
+  return new Promise(resolve => {
+    if (isBotReady) return resolve();
+    client.once(Events.ClientReady, () => resolve());
+  });
+}
+
 // On-duty board updater
 async function updateDutyBoard(guild) {
   const channelIdRaw = config.channels?.clockStatusChannelId;
@@ -163,8 +158,8 @@ async function updateDutyBoard(guild) {
     return;
   }
 
-  const match = channelIdRaw.match(/\d{15,}/);
-  const channelId = match ? match[0] : channelIdRaw;
+  const match = channelIdRaw.toString().match(/\d{15,}/);
+  const channelId = match ? match[0] : channelIdRaw.toString();
 
   console.log('[DutyBoard] Using channel ID:', channelId);
 
@@ -219,7 +214,7 @@ async function updateDutyBoard(guild) {
 }
 
 // ---------------------------
-// Admin auth helpers
+// Admin-auth helpers
 // ---------------------------
 function isAdminSession(req) {
   return req.isAuthenticated && req.isAuthenticated() && req.session && req.session.isAdmin;
@@ -240,13 +235,12 @@ function requireAdmin(req, res, next) {
 // Discord OAuth routes
 app.get('/auth/discord', passport.authenticate('discord'));
 
-// ✅ Callback: admin = anyone with the "--High Command--" role (or highCommandRoleIds in config)
+// Callback: admin = anyone with "--High Command--" or highCommandRoleIds
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/auth-failed' }),
   async (req, res) => {
     try {
-      // Wait for bot to be ready
       await ensureClientReady();
 
       const guildId = config.guildId;
@@ -270,7 +264,7 @@ app.get(
         role => role.name === '--High Command--'
       );
 
-      // Also respect highCommandRoleIds from config (fallback / extra control)
+      // Also respect highCommandRoleIds from config (backup)
       const hcIds = (config.roles && config.roles.highCommandRoleIds) || [];
       const hasConfigHC = hcIds.length > 0 ? hasAnyRole(member, hcIds) : false;
 
@@ -283,7 +277,6 @@ app.get(
           .send('You do not have the --High Command-- role required for admin access.');
       }
 
-      // Mark session as admin
       req.session.isAdmin = true;
       res.redirect('/admin');
     } catch (err) {
@@ -310,7 +303,7 @@ app.get('/admin', requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-// Small helper for the front-end to know who is logged in
+// Simple “who am I” endpoint for the admin front-end
 app.get('/api/me', (req, res) => {
   if (!isAdminSession(req)) {
     return res.status(401).json({ authenticated: false });
@@ -535,9 +528,10 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 // ---------------------------
-// Slash command registration
+// Slash command registration & ready
 // ---------------------------
 client.once(Events.ClientReady, async readyClient => {
+  isBotReady = true;
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
   const rest = new REST({ version: '10' }).setToken(config.token);
@@ -756,7 +750,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // /ticket open / close
+    // /ticket
     if (commandName === 'ticket') {
       const sub = interaction.options.getSubcommand();
 
@@ -975,7 +969,12 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
 
-        await updateDutyBoard(interaction.guild);
+        try {
+          const guild = await client.guilds.fetch(config.guildId);
+          await updateDutyBoard(guild);
+        } catch (err) {
+          console.error('[DutyBoard] Failed to update on clock in:', err);
+        }
 
         await interaction.reply({
           content: `✅ You are now clocked in as **${assignment}**.`,
@@ -1002,7 +1001,12 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         }
 
-        await updateDutyBoard(interaction.guild);
+        try {
+          const guild = await client.guilds.fetch(config.guildId);
+          await updateDutyBoard(guild);
+        } catch (err) {
+          console.error('[DutyBoard] Failed to update on clock out:', err);
+        }
 
         await interaction.reply({
           content: `✅ You are now clocked out. Session duration: **${msToHuman(duration)}**.`,
@@ -1127,7 +1131,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  // Button interactions for application panel
+  // Application buttons → modals
   if (interaction.isButton()) {
     const id = interaction.customId;
     if (id.startsWith('apply_')) {
@@ -1181,7 +1185,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  // Modal submit for applications
+  // Application modals → store + log
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
