@@ -3,7 +3,6 @@
 // ---------------------------
 // Env & imports
 // ---------------------------
-require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
@@ -1280,3 +1279,4 @@ client.on(Events.InteractionCreate, async interaction => {
 // Start the bot
 // ---------------------------
 client.login(BOT_TOKEN);
+
