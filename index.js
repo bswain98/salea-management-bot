@@ -1,8 +1,10 @@
 // index.js
 
 // ---------------------------
-// Imports
+// Env & imports
 // ---------------------------
+require('dotenv').config();
+
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
@@ -44,6 +46,9 @@ const {
 } = require('./storage');
 
 const config = require('./config.json');
+
+// Use env token in cloud, fallback to config locally
+const BOT_TOKEN = process.env.DISCORD_TOKEN || config.token;
 
 // ---------------------------
 // Discord client
@@ -88,7 +93,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-// Use Render URL or fallback
 const CALLBACK_URL =
   process.env.DISCORD_CALLBACK_URL ||
   process.env.DASHBOARD_CALLBACK_URL ||
@@ -142,7 +146,6 @@ function hasAnyRole(member, roleIds) {
   return roleIds.some(id => member.roles.cache.has(id));
 }
 
-// Wait for bot to be ready (no weird isReady calls)
 function ensureClientReady() {
   return new Promise(resolve => {
     if (isBotReady) return resolve();
@@ -150,8 +153,22 @@ function ensureClientReady() {
   });
 }
 
-// On-duty board updater
-async function updateDutyBoard(guild) {
+// ---------------------------
+// Duty board (fixed version)
+// ---------------------------
+async function updateDutyBoard() {
+  const guildId = config.guildId;
+  if (!guildId) {
+    console.log('[DutyBoard] No guildId configured.');
+    return;
+  }
+
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    console.log('[DutyBoard] Could not fetch guild for ID:', guildId);
+    return;
+  }
+
   const channelIdRaw = config.channels?.clockStatusChannelId;
   if (!channelIdRaw) {
     console.log('[DutyBoard] No clockStatusChannelId configured.');
@@ -235,7 +252,6 @@ function requireAdmin(req, res, next) {
 // Discord OAuth routes
 app.get('/auth/discord', passport.authenticate('discord'));
 
-// Callback: admin = anyone with "--High Command--" or highCommandRoleIds
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/auth-failed' }),
@@ -534,7 +550,7 @@ client.once(Events.ClientReady, async readyClient => {
   isBotReady = true;
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
-  const rest = new REST({ version: '10' }).setToken(config.token);
+  const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
 
   try {
     console.log('🔁 Refreshing application (slash) commands...');
@@ -548,8 +564,7 @@ client.once(Events.ClientReady, async readyClient => {
   }
 
   try {
-    const guild = await client.guilds.fetch(config.guildId);
-    await updateDutyBoard(guild);
+    await updateDutyBoard();
   } catch (err) {
     console.error('[DutyBoard] Failed to update on ready:', err);
   }
@@ -970,8 +985,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         try {
-          const guild = await client.guilds.fetch(config.guildId);
-          await updateDutyBoard(guild);
+          await updateDutyBoard();
         } catch (err) {
           console.error('[DutyBoard] Failed to update on clock in:', err);
         }
@@ -1002,8 +1016,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         try {
-          const guild = await client.guilds.fetch(config.guildId);
-          await updateDutyBoard(guild);
+          await updateDutyBoard();
         } catch (err) {
           console.error('[DutyBoard] Failed to update on clock out:', err);
         }
@@ -1266,4 +1279,4 @@ client.on(Events.InteractionCreate, async interaction => {
 // ---------------------------
 // Start the bot
 // ---------------------------
-client.login(config.token);
+client.login(BOT_TOKEN);
