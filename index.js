@@ -1,9 +1,8 @@
 // index.js
 
 // ---------------------------
-// Env & imports
+// Imports & setup
 // ---------------------------
-
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
@@ -46,8 +45,17 @@ const {
 
 const config = require('./config.json');
 
-// Use env token in cloud, fallback to config locally
-const BOT_TOKEN = process.env.DISCORD_TOKEN || config.token;
+// Prefer env vars (Render) and fall back to config.json
+const BOT_TOKEN  = process.env.DISCORD_TOKEN      || config.token;
+const CLIENT_ID  = process.env.DISCORD_CLIENT_ID  || config.clientId;
+const GUILD_ID   = process.env.DISCORD_GUILD_ID   || config.guildId;
+const CALLBACK_URL =
+  process.env.DISCORD_CALLBACK_URL ||
+  process.env.DASHBOARD_CALLBACK_URL ||
+  'https://salea-management-bot.onrender.com/auth/discord/callback';
+
+console.log('[Config] CLIENT_ID:', CLIENT_ID || 'MISSING');
+console.log('[Config] GUILD_ID:', GUILD_ID || 'MISSING');
 
 // ---------------------------
 // Discord client
@@ -65,13 +73,12 @@ let dutyBoardMessageId = null;
 let isBotReady = false;
 
 // ---------------------------
-// Express app (Admin panel)
+// Express app / Admin panel
 // ---------------------------
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Sessions (for Discord OAuth)
 app.use(
   session({
     secret: process.env.ADMIN_SESSION_SECRET || 'salea-session-secret',
@@ -82,8 +89,6 @@ app.use(
 
 app.use(passport.initialize());
 app.use(passport.session());
-
-// Static admin assets
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------
@@ -92,22 +97,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-const CALLBACK_URL =
-  process.env.DISCORD_CALLBACK_URL ||
-  process.env.DASHBOARD_CALLBACK_URL ||
-  'https://salea-management-bot.onrender.com/auth/discord/callback';
-
 passport.use(
   new DiscordStrategy(
     {
-      clientID: process.env.DISCORD_CLIENT_ID || config.clientId,
-      clientSecret: process.env.DISCORD_CLIENT_SECRET || 'PUT_CLIENT_SECRET_HERE',
+      clientID: CLIENT_ID || 'MISSING_CLIENT_ID',
+      clientSecret: process.env.DISCORD_CLIENT_SECRET || 'MISSING_CLIENT_SECRET',
       callbackURL: CALLBACK_URL,
       scope: ['identify']
     },
-    (accessToken, refreshToken, profile, done) => {
-      return done(null, profile);
-    }
+    (accessToken, refreshToken, profile, done) => done(null, profile)
   )
 );
 
@@ -118,7 +116,6 @@ function msToHuman(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
-
   const parts = [];
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
@@ -153,18 +150,17 @@ function ensureClientReady() {
 }
 
 // ---------------------------
-// Duty board (fixed version)
+// Duty board
 // ---------------------------
 async function updateDutyBoard() {
-  const guildId = config.guildId;
-  if (!guildId) {
-    console.log('[DutyBoard] No guildId configured.');
+  if (!GUILD_ID) {
+    console.log('[DutyBoard] No GUILD_ID configured.');
     return;
   }
 
-  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (!guild) {
-    console.log('[DutyBoard] Could not fetch guild for ID:', guildId);
+    console.log('[DutyBoard] Could not fetch guild for ID:', GUILD_ID);
     return;
   }
 
@@ -206,16 +202,13 @@ async function updateDutyBoard() {
       : s.assignment
       ? [s.assignment]
       : [];
-
     const assignmentsText = assignments.length > 0 ? assignments.join(', ') : 'Unspecified';
     const startedUnix = Math.floor(s.clockIn / 1000);
     const elapsed = msToHuman(Date.now() - s.clockIn);
-
     return `• <@${s.userId}> – **${assignmentsText}** – on duty since <t:${startedUnix}:R> (**${elapsed}**)`;
   });
 
-  const header = '📋 **On Duty Board**';
-  const content = `${header}\n${lines.join('\n')}`;
+  const content = '📋 **On Duty Board**\n' + lines.join('\n');
 
   if (dutyBoardMessageId) {
     const msg = await channel.messages.fetch(dutyBoardMessageId).catch(() => null);
@@ -230,7 +223,7 @@ async function updateDutyBoard() {
 }
 
 // ---------------------------
-// Admin-auth helpers
+// Admin session helpers
 // ---------------------------
 function isAdminSession(req) {
   return req.isAuthenticated && req.isAuthenticated() && req.session && req.session.isAdmin;
@@ -238,17 +231,13 @@ function isAdminSession(req) {
 
 function requireAdmin(req, res, next) {
   if (isAdminSession(req)) return next();
-
   if (req.path.startsWith('/api/')) {
-    return res.status(401).json({
-      error: 'Missing or invalid admin session. Please log in via Discord.'
-    });
+    return res.status(401).json({ error: 'Missing or invalid admin session. Please log in via Discord.' });
   }
-
   return res.redirect('/auth/discord');
 }
 
-// Discord OAuth routes
+// OAuth routes
 app.get('/auth/discord', passport.authenticate('discord'));
 
 app.get(
@@ -258,13 +247,12 @@ app.get(
     try {
       await ensureClientReady();
 
-      const guildId = config.guildId;
-      if (!guildId) {
-        console.error('No guildId in config.json');
-        return res.status(500).send('Bot configuration error: missing guildId.');
+      if (!GUILD_ID) {
+        console.error('No GUILD_ID configured.');
+        return res.status(500).send('Bot configuration error: missing guild ID.');
       }
 
-      const guild = await client.guilds.fetch(guildId);
+      const guild = await client.guilds.fetch(GUILD_ID);
       const member = await guild.members.fetch(req.user.id).catch(() => null);
 
       if (!member) {
@@ -274,15 +262,10 @@ app.get(
           .send('You must be in the SALEA Discord server to use this admin panel.');
       }
 
-      // Check for role named "--High Command--"
-      const hasNamedHC = member.roles.cache.some(
-        role => role.name === '--High Command--'
-      );
-
-      // Also respect highCommandRoleIds from config (backup)
+      // Admin = has role named "--High Command--" OR in highCommandRoleIds
+      const hasNamedHC = member.roles.cache.some(role => role.name === '--High Command--');
       const hcIds = (config.roles && config.roles.highCommandRoleIds) || [];
       const hasConfigHC = hcIds.length > 0 ? hasAnyRole(member, hcIds) : false;
-
       const isAdmin = hasNamedHC || hasConfigHC;
 
       if (!isAdmin) {
@@ -313,17 +296,13 @@ app.get('/logout', (req, res) => {
   });
 });
 
-// Admin panel route (protected)
+// Admin panel
 app.get('/admin', requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-// Simple “who am I” endpoint for the admin front-end
 app.get('/api/me', (req, res) => {
-  if (!isAdminSession(req)) {
-    return res.status(401).json({ authenticated: false });
-  }
-
+  if (!isAdminSession(req)) return res.status(401).json({ authenticated: false });
   res.json({
     authenticated: true,
     user: {
@@ -360,10 +339,7 @@ const commands = [
         .setName('approve')
         .setDescription('Approve the latest application for a user.')
         .addUserOption(opt =>
-          opt
-            .setName('user')
-            .setDescription('Applicant to approve.')
-            .setRequired(true)
+          opt.setName('user').setDescription('Applicant to approve.').setRequired(true)
         )
         .addStringOption(opt =>
           opt
@@ -387,16 +363,10 @@ const commands = [
         .setName('deny')
         .setDescription('Deny the latest application for a user.')
         .addUserOption(opt =>
-          opt
-            .setName('user')
-            .setDescription('Applicant to deny.')
-            .setRequired(true)
+          opt.setName('user').setDescription('Applicant to deny.').setRequired(true)
         )
         .addStringOption(opt =>
-          opt
-            .setName('reason')
-            .setDescription('Reason for denial.')
-            .setRequired(true)
+          opt.setName('reason').setDescription('Reason for denial.').setRequired(true)
         )
     ),
 
@@ -427,9 +397,7 @@ const commands = [
         )
     )
     .addSubcommand(sub =>
-      sub
-        .setName('close')
-        .setDescription('Close this ticket channel (with transcript).')
+      sub.setName('close').setDescription('Close this ticket channel (with transcript).')
     ),
 
   new SlashCommandBuilder()
@@ -456,15 +424,9 @@ const commands = [
             )
         )
     )
+    .addSubcommand(sub => sub.setName('out').setDescription('Clock out of duty.'))
     .addSubcommand(sub =>
-      sub
-        .setName('out')
-        .setDescription('Clock out of duty.')
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('status')
-        .setDescription('Check your current clock-in status.')
+      sub.setName('status').setDescription('Check your current clock-in status.')
     ),
 
   new SlashCommandBuilder()
@@ -491,10 +453,7 @@ const commands = [
         .setName('member')
         .setDescription('View duty time for another member.')
         .addUserOption(opt =>
-          opt
-            .setName('user')
-            .setDescription('User to check.')
-            .setRequired(true)
+          opt.setName('user').setDescription('User to check.').setRequired(true)
         )
         .addStringOption(opt =>
           opt
@@ -543,23 +502,28 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 // ---------------------------
-// Slash command registration & ready
+// Client ready – register commands
 // ---------------------------
 client.once(Events.ClientReady, async readyClient => {
   isBotReady = true;
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
-  const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
-
-  try {
-    console.log('🔁 Refreshing application (slash) commands...');
-    await rest.put(
-      Routes.applicationGuildCommands(config.clientId, config.guildId),
-      { body: commands }
+  if (!CLIENT_ID || !GUILD_ID) {
+    console.error(
+      '[Slash] Missing CLIENT_ID or GUILD_ID – skipping slash command registration. Set DISCORD_CLIENT_ID and DISCORD_GUILD_ID in Render.'
     );
-    console.log('✅ Slash commands registered.');
-  } catch (error) {
-    console.error('❌ Error registering commands:', error);
+  } else {
+    const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
+    try {
+      console.log('🔁 Refreshing application (slash) commands...');
+      await rest.put(
+        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+        { body: commands }
+      );
+      console.log('✅ Slash commands registered.');
+    } catch (error) {
+      console.error('❌ Error registering commands:', error);
+    }
   }
 
   try {
@@ -573,6 +537,7 @@ client.once(Events.ClientReady, async readyClient => {
 // Interaction handler
 // ---------------------------
 client.on(Events.InteractionCreate, async interaction => {
+  // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
@@ -695,9 +660,7 @@ client.on(Events.InteractionCreate, async interaction => {
           )
           .setTimestamp(new Date());
 
-        if (appRecord) {
-          embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-        }
+        if (appRecord) embed.setFooter({ text: `Application ID: ${appRecord.id}` });
 
         try {
           const channel = await interaction.client.channels.fetch(
@@ -742,9 +705,7 @@ client.on(Events.InteractionCreate, async interaction => {
           )
           .setTimestamp(new Date());
 
-        if (appRecord) {
-          embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-        }
+        if (appRecord) embed.setFooter({ text: `Application ID: ${appRecord.id}` });
 
         try {
           const channel = await interaction.client.channels.fetch(
@@ -916,16 +877,8 @@ client.on(Events.InteractionCreate, async interaction => {
               .setColor(0xffa500)
               .addFields(
                 { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
-                {
-                  name: 'Closed By',
-                  value: `<@${interaction.user.id}>`,
-                  inline: true
-                },
-                {
-                  name: 'Original User',
-                  value: ticket ? `<@${ticket.userId}>` : 'Unknown',
-                  inline: true
-                }
+                { name: 'Closed By', value: `<@${interaction.user.id}>`, inline: true },
+                { name: 'Original User', value: ticket ? `<@${ticket.userId}>` : 'Unknown', inline: true }
               )
               .setTimestamp(new Date());
 
@@ -1143,7 +1096,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  // Application buttons → modals
+  // Button → app modal
   if (interaction.isButton()) {
     const id = interaction.customId;
     if (id.startsWith('apply_')) {
@@ -1186,18 +1139,18 @@ client.on(Events.InteractionCreate, async interaction => {
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true);
 
-      const row1 = new ActionRowBuilder().addComponents(q1);
-      const row2 = new ActionRowBuilder().addComponents(q2);
-      const row3 = new ActionRowBuilder().addComponents(q3);
-      const row4 = new ActionRowBuilder().addComponents(q4);
-
-      modal.addComponents(row1, row2, row3, row4);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(q1),
+        new ActionRowBuilder().addComponents(q2),
+        new ActionRowBuilder().addComponents(q3),
+        new ActionRowBuilder().addComponents(q4)
+      );
 
       await interaction.showModal(modal);
     }
   }
 
-  // Application modals → store + log
+  // Modal submit → store app
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('app_modal_')) {
       const divisionKey = interaction.customId.replace('app_modal_', '');
@@ -1220,12 +1173,7 @@ client.on(Events.InteractionCreate, async interaction => {
         id: `${interaction.user.id}-${Date.now()}`,
         userId: interaction.user.id,
         division: divisionName,
-        answers: {
-          name,
-          age,
-          experience: exp,
-          availability
-        },
+        answers: { name, age, experience: exp, availability },
         status: 'pending',
         createdAt: Date.now(),
         decidedAt: null,
@@ -1278,5 +1226,8 @@ client.on(Events.InteractionCreate, async interaction => {
 // ---------------------------
 // Start the bot
 // ---------------------------
-client.login(BOT_TOKEN);
-
+if (!BOT_TOKEN) {
+  console.error('❌ No BOT_TOKEN provided. Set DISCORD_TOKEN in Render or token in config.json.');
+} else {
+  client.login(BOT_TOKEN);
+}
