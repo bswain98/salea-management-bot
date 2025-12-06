@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title><%= title || 'Aegis Admin' %></title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo">Aegis Admin</span>
+      <% if (user) { %>
+        <span class="user-tag"><%= user.username %>#<%= user.discriminator %></span>
+      <% } %>
+    </div>
+    <div class="topbar-right">
+      <% if (user) { %>
+        <a href="/admin" class="btn btn-ghost">Guilds</a>
+        <a href="/logout" class="btn btn-ghost">Logout</a>
+      <% } else { %>
+        <a href="/auth/discord" class="btn btn-primary">Login with Discord</a>
+      <% } %>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <% if (activeGuild) { %>
+      <aside class="sidebar">
+        <div class="guild-info">
+          <div class="guild-name"><%= activeGuild.name %></div>
+          <div class="guild-id">ID: <%= activeGuild.id %></div>
+        </div>
+        <nav class="nav">
+          <a href="/admin/guild/<%= activeGuild.id %>" class="nav-link <%= activeTab === 'dashboard' ? 'active' : '' %>">Dashboard</a>
+          <a href="/admin/guild/<%= activeGuild.id %>/config" class="nav-link <%= activeTab === 'config' ? 'active' : '' %>">Configuration</a>
+          <a href="/admin/guild/<%= activeGuild.id %>/tickets" class="nav-link <%= activeTab === 'tickets' ? 'active' : '' %>">Tickets</a>
+          <a href="/admin/guild/<%= activeGuild.id %>/applications" class="nav-link <%= activeTab === 'applications' ? 'active' : '' %>">Applications</a>
+        </nav>
+      </aside>
+    <% } %>
+
+    <main class="main">
+      <%- body %>
+    </main>
+  </div>
+</body>
+</html>
