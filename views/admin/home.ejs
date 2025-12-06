@@ -1,0 +1,26 @@
+<% layout('layout') %>
+
+<section>
+  <h1>Choose a server to manage</h1>
+  <p class="muted">Only servers where you are an admin (Manage Server or configured admin roles) will show as accessible.</p>
+
+  <div class="guild-grid">
+    <% if (!guilds || guilds.length === 0) { %>
+      <p>You don't share any guilds with this bot.</p>
+    <% } %>
+
+    <% (guilds || []).forEach(g => { %>
+      <div class="card guild-card">
+        <h2><%= g.name %></h2>
+        <p>ID: <code><%= g.id %></code></p>
+        <div class="card-footer">
+          <% if (g.isAdmin) { %>
+            <a href="/admin/guild/<%= g.id %>" class="btn btn-primary">Manage</a>
+          <% } else { %>
+            <button class="btn btn-disabled" disabled>No access</button>
+          <% } %>
+        </div>
+      </div>
+    <% }) %>
+  </div>
+</section>
