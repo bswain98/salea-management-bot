@@ -1,0 +1,133 @@
+<% layout('layout') %>
+
+<section class="page-header">
+  <h1>Configuration</h1>
+  <p class="muted">Configure admin roles, clock types, ticket types, and application types for <strong><%= activeGuild.name %></strong>.</p>
+</section>
+
+<form method="POST" action="/admin/guild/<%= activeGuild.id %>/config">
+  <section class="card">
+    <h2>Admin Access</h2>
+    <label class="field">
+      <span>Admin Roles (hold Ctrl/Cmd to select multiple)</span>
+      <select name="adminRoleIds" multiple size="6">
+        <% roles.forEach(r => { %>
+          <option value="<%= r.id %>" <%= (config.adminRoleIds || []).includes(r.id) ? 'selected' : '' %>>
+            <%= r.name %>
+          </option>
+        <% }) %>
+      </select>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Clock & Duty</h2>
+
+    <label class="field">
+      <span>On-Duty Role</span>
+      <select name="onDutyRoleId">
+        <option value="">(none)</option>
+        <% roles.forEach(r => { %>
+          <option value="<%= r.id %>" <%= config.onDutyRoleId === r.id ? 'selected' : '' %>>
+            <%= r.name %>
+          </option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>On-Duty Status Channel (Discord board)</span>
+      <select name="clockStatusChannelId">
+        <option value="">(none)</option>
+        <% channels.forEach(c => { %>
+          <option value="<%= c.id %>" <%= config.clockStatusChannelId === c.id ? 'selected' : '' %>>
+            #<%= c.name %>
+          </option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Clock Types (JSON)</span>
+      <textarea name="clockTypesJson" rows="8"><%= clockTypesJson %></textarea>
+      <p class="muted">
+        Example:
+        [
+          { "key": "patrol", "label": "Patrol", "addRoleIds": ["ROLE_ID"], "removeRoleIdsOnOut": ["ROLE_ID"] },
+          { "key": "cid", "label": "CID", "addRoleIds": [], "removeRoleIdsOnOut": [] }
+        ]
+      </p>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Ticket System</h2>
+
+    <label class="field">
+      <span>Ticket Panel Channel</span>
+      <select name="ticketPanelChannelId">
+        <option value="">(none)</option>
+        <% channels.forEach(c => { %>
+          <option value="<%= c.id %>" <%= config.ticketPanelChannelId === c.id ? 'selected' : '' %>>
+            #<%= c.name %>
+          </option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Ticket Types (JSON)</span>
+      <textarea name="ticketTypesJson" rows="8"><%= ticketTypesJson %></textarea>
+      <p class="muted">
+        Example:
+        [
+          { "key": "general", "label": "General Support", "description": "General help", "pingRoleIds": ["ROLE_ID"] },
+          { "key": "ia", "label": "IA / Complaint", "description": "Internal affairs", "pingRoleIds": ["ROLE_ID"] }
+        ]
+      </p>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Applications</h2>
+
+    <label class="field">
+      <span>Application Panel Channel</span>
+      <select name="applicationPanelChannelId">
+        <option value="">(none)</option>
+        <% channels.forEach(c => { %>
+          <option value="<%= c.id %>" <%= config.applicationPanelChannelId === c.id ? 'selected' : '' %>>
+            #<%= c.name %>
+          </option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Application Types (JSON)</span>
+      <textarea name="applicationTypesJson" rows="10"><%= applicationTypesJson %></textarea>
+      <p class="muted">
+        Example:
+        [
+          {
+            "key": "patrol",
+            "label": "Patrol Application",
+            "questions": [
+              "In-game name",
+              "Age (OOC)",
+              "LEO / RP experience",
+              "Why do you want to join Patrol?"
+            ],
+            "addRoleIds": ["CADET_ROLE_ID"],
+            "removeRoleIds": ["APPLICANT_ROLE_ID"],
+            "pingRoleIds": ["HR_ROLE_ID"]
+          }
+        ]
+      </p>
+    </label>
+  </section>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save Configuration</button>
+  </div>
+</form>
