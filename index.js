@@ -1,70 +1,62 @@
 // index.js
-require('dotenv').config();
-
+const path = require('path');
 const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
 const DiscordStrategy = require('passport-discord').Strategy;
-const bodyParser = require('body-parser');
 
 const {
   Client,
   GatewayIntentBits,
   Partials,
+  Events,
   REST,
   Routes,
-  SlashCommandBuilder,
-  PermissionFlagsBits,
-  ChannelType,
   EmbedBuilder,
-  ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ActionRowBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  PermissionFlagsBits,
+  ChannelType
 } = require('discord.js');
 
 const {
   getGuildConfig,
   updateGuildConfig,
   createTicket,
-  getTicketByChannel,
-  getTicketById,
-  closeTicket,
   listTickets,
+  getTicketByChannel,
+  closeTicketByChannel,
   createApplication,
-  getApplicationById,
   listApplications,
+  getApplicationById,
   decideApplication,
   clockIn,
   clockOut,
-  getOpenSessions,
-  getUserSessionsInRange,
-  getSessionsInRange,
-  addGlobalBan,
-  removeGlobalBan,
-  isGloballyBanned,
-  listGlobalBans
+  getOpenSessions
 } = require('./storage');
 
-// ---------------------------
-// ENV + constants
-// ---------------------------
+// ------------------------
+// ENV
+// ------------------------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'salea-secret';
-const BASE_URL = process.env.BASE_URL || 'https://salea-management-bot.onrender.com';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const PORT = process.env.PORT || 10000;
 
 if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET) {
-  console.error('❌ Missing DISCORD_TOKEN, DISCORD_CLIENT_ID, or DISCORD_CLIENT_SECRET env vars.');
+  console.error('❌ DISCORD_TOKEN, DISCORD_CLIENT_ID, and DISCORD_CLIENT_SECRET must be set.');
   process.exit(1);
 }
 
-const CALLBACK_URL = `${BASE_URL.replace(/\/+$/, '')}/auth/discord/callback`;
-console.log('🌐 Using Discord OAuth callback URL:', CALLBACK_URL);
-
-// ---------------------------
+// ------------------------
 // Discord client
-// ---------------------------
+// ------------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -74,900 +66,966 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// ---------------------------
-// Slash commands
-// ---------------------------
-const commands = [
-  // Clock commands
-  new SlashCommandBuilder()
-    .setName('clock')
-    .setDescription('Clock in/out and view duty status.')
-    .addSubcommand(sub =>
-      sub
-        .setName('in')
-        .setDescription('Clock in.')
-        .addStringOption(opt =>
-          opt
-            .setName('types')
-            .setDescription('Comma-separated clock types (keys) configured in admin panel.')
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(sub =>
-      sub.setName('out').setDescription('Clock out.')
-    )
-    .addSubcommand(sub =>
-      sub.setName('status').setDescription('View your current duty status.')
-    ),
-
-  // Ticket commands
-  new SlashCommandBuilder()
-    .setName('ticket')
-    .setDescription('Manage tickets.')
-    .addSubcommand(sub =>
-      sub
-        .setName('close')
-        .setDescription('Close this ticket.')
-    ),
-
-  // Application commands
-  new SlashCommandBuilder()
-    .setName('app')
-    .setDescription('Manage applications.')
-    .addSubcommand(sub =>
-      sub
-        .setName('approve')
-        .setDescription('Approve an application.')
-        .addStringOption(opt =>
-          opt
-            .setName('id')
-            .setDescription('Application ID.')
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('deny')
-        .setDescription('Deny an application.')
-        .addStringOption(opt =>
-          opt
-            .setName('id')
-            .setDescription('Application ID.')
-            .setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('reason')
-            .setDescription('Reason for denial.')
-            .setRequired(true)
-        )
-    ),
-
-  // Moderation / global bans
-  new SlashCommandBuilder()
-    .setName('mod')
-    .setDescription('Moderation commands.')
-    .addSubcommand(sub =>
-      sub
-        .setName('gban')
-        .setDescription('Globally ban a user from all guilds using this bot.')
-        .addUserOption(opt =>
-          opt
-            .setName('user')
-            .setDescription('User to ban.')
-            .setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('reason')
-            .setDescription('Reason.')
-            .setRequired(false)
-        )
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('ungban')
-        .setDescription('Remove a user from global ban list.')
-        .addStringOption(opt =>
-          opt
-            .setName('userid')
-            .setDescription('User ID to unban.')
-            .setRequired(true)
-        )
-    )
-].map(c => c.toJSON());
-
-async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
-  // Register as global application commands
-  await rest.put(
-    Routes.applicationCommands(DISCORD_CLIENT_ID),
-    { body: commands }
-  );
-
-  console.log('✅ Slash commands registered globally.');
-}
-
-// ---------------------------
 // Utility
-// ---------------------------
 function msToHuman(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
-  if (hours <= 0 && minutes <= 0) return '0m';
   const parts = [];
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
-  return parts.join(' ');
+  return parts.length ? parts.join(' ') : '0m';
 }
 
-function isAdmin(member, guildConfig) {
-  if (!member) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-  if (!guildConfig || !guildConfig.adminRoleIds) return false;
-  return guildConfig.adminRoleIds.some(id => member.roles.cache.has(id));
+function getRangeStart(range) {
+  const now = Date.now();
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (range === 'today') {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today.getTime();
+  } else if (range === 'week') {
+    return now - 7 * oneDay;
+  } else if (range === 'month') {
+    return now - 30 * oneDay;
+  }
+  return 0;
 }
 
-async function updateDutyBoardForGuild(guild) {
+// ------------------------
+// Slash commands
+// ------------------------
+const slashCommands = [
+  // clock
+  {
+    name: 'clock',
+    description: 'Clock in, clock out, or check status.',
+    options: [
+      {
+        type: 1, // SUB_COMMAND
+        name: 'in',
+        description: 'Clock in for duty.',
+        options: [
+          {
+            type: 3, // STRING
+            name: 'types',
+            description: 'Comma-separated clock types (e.g. patrol,cid)',
+            required: true
+          }
+        ]
+      },
+      {
+        type: 1,
+        name: 'out',
+        description: 'Clock out of duty.'
+      },
+      {
+        type: 1,
+        name: 'status',
+        description: 'Check your current duty status.'
+      }
+    ]
+  },
+  // simple ticket close
+  {
+    name: 'ticket',
+    description: 'Manage tickets.',
+    options: [
+      {
+        type: 1,
+        name: 'close',
+        description: 'Close this ticket channel.'
+      }
+    ]
+  },
+  // application approve/deny by ID
+  {
+    name: 'app',
+    description: 'Manage applications.',
+    options: [
+      {
+        type: 1,
+        name: 'approve',
+        description: 'Approve an application by ID.',
+        options: [
+          {
+            type: 3,
+            name: 'id',
+            description: 'Application ID',
+            required: true
+          }
+        ]
+      },
+      {
+        type: 1,
+        name: 'deny',
+        description: 'Deny an application by ID.',
+        options: [
+          {
+            type: 3,
+            name: 'id',
+            description: 'Application ID',
+            required: true
+          },
+          {
+            type: 3,
+            name: 'reason',
+            description: 'Reason for denial.',
+            required: true
+          }
+        ]
+      }
+    ]
+  }
+];
+
+// ------------------------
+// Duty board per guild
+// ------------------------
+const dutyBoardMessageIds = new Map(); // guildId -> messageId
+
+async function updateDutyBoard(guild) {
   const cfg = getGuildConfig(guild.id);
-  if (!cfg.clockStatusChannelId) return;
+  const channelId = cfg.clockStatusChannelId;
+  if (!channelId) return;
 
-  const channel = await guild.channels.fetch(cfg.clockStatusChannelId).catch(() => null);
-  if (!channel || channel.type !== ChannelType.GuildText) return;
-
-  const sessions = getOpenSessions(guild.id);
-  if (sessions.length === 0) {
-    await channel.send('📋 **On Duty Board**\nNo one is currently on duty.').catch(() => {});
+  let channel;
+  try {
+    channel = await guild.channels.fetch(channelId);
+  } catch {
+    console.warn(`[DutyBoard] Channel not found for guild ${guild.id}`);
     return;
   }
+  if (!channel || !channel.isTextBased()) return;
 
-  const lines = await Promise.all(
-    sessions.map(async s => {
-      const user = await guild.members.fetch(s.userId).catch(() => null);
-      const name = user ? user.displayName : s.userId;
-      const started = `<t:${Math.floor(s.clockIn / 1000)}:R>`;
+  const sessions = getOpenSessions(guild.id);
+  let content;
+
+  if (!sessions || sessions.length === 0) {
+    content = '📋 **On Duty Board**\nNo one is currently clocked in.';
+  } else {
+    const lines = sessions.map(s => {
+      const startedUnix = Math.floor(s.clockIn / 1000);
       const elapsed = msToHuman(Date.now() - s.clockIn);
-      return `• **${name}** (<@${s.userId}>) – ${s.clockTypes.join(', ')} – on since ${started} (**${elapsed}**)`;
-    })
-  );
+      const typesText = (s.clockTypes || []).join(', ') || 'N/A';
+      return `• <@${s.userId}> – **${typesText}** – since <t:${startedUnix}:R> (**${elapsed}**)`;
+    });
+    content = '📋 **On Duty Board**\n' + lines.join('\n');
+  }
 
-  const content = '📋 **On Duty Board**\n' + lines.join('\n');
-  await channel.send(content).catch(() => {});
+  const existingId = dutyBoardMessageIds.get(guild.id);
+  if (existingId) {
+    try {
+      const msg = await channel.messages.fetch(existingId);
+      await msg.edit(content);
+      return;
+    } catch {
+      // fall through to send new
+    }
+  }
+
+  const newMsg = await channel.send(content);
+  dutyBoardMessageIds.set(guild.id, newMsg.id);
 }
 
-// ---------------------------
+// ------------------------
 // Discord events
-// ---------------------------
-client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+// ------------------------
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log(`✅ Logged in as ${readyClient.user.tag}`);
+
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
   try {
-    await registerCommands();
+    console.log('🔁 Registering slash commands globally...');
+    await rest.put(
+      Routes.applicationCommands(readyClient.user.id),
+      { body: slashCommands }
+    );
+    console.log('✅ Slash commands registered.');
   } catch (err) {
-    console.error('❌ Error registering commands:', err);
+    console.error('❌ Error registering slash commands:', err);
   }
 
-  // Initialize guild configs
-  client.guilds.cache.forEach(guild => {
-    const cfg = getGuildConfig(guild.id);
-    if (!cfg.name) {
-      cfg.name = guild.name;
-      updateGuildConfig(guild.id, cfg);
+  // Initialize duty boards for all guilds
+  for (const [guildId, guild] of client.guilds.cache) {
+    try {
+      await updateDutyBoard(guild);
+    } catch (err) {
+      console.error(`[DutyBoard] Failed for guild ${guildId}:`, err);
     }
-  });
-});
-
-// Auto-kick globally banned users
-client.on('guildMemberAdd', member => {
-  if (isGloballyBanned(member.id)) {
-    member.kick('Globally banned by SALEA management bot.').catch(() => {});
   }
 });
 
-client.on('interactionCreate', async interaction => {
+// Interaction handling (slash, buttons, modals)
+client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) {
-    const guild = interaction.guild;
-    if (!guild) return;
-    const cfg = getGuildConfig(guild.id);
+    const { commandName } = interaction;
 
-    // CLOCK
-    if (interaction.commandName === 'clock') {
+    // ---- /clock ----
+    if (commandName === 'clock') {
       const sub = interaction.options.getSubcommand();
+      const guildId = interaction.guildId;
+      const userId = interaction.user.id;
+      const cfg = getGuildConfig(guildId);
+      const member = await interaction.guild.members.fetch(userId);
 
       if (sub === 'in') {
         const typesRaw = interaction.options.getString('types');
-        const keys = typesRaw
-          .split(',')
-          .map(x => x.trim())
-          .filter(Boolean);
+        const typeKeys = typesRaw.split(',').map(s => s.trim()).filter(Boolean);
 
-        if (keys.length === 0) {
-          return interaction.reply({ content: '❌ No clock types specified.', ephemeral: true });
+        if (typeKeys.length === 0) {
+          return interaction.reply({ content: '❌ Provide at least one clock type.', ephemeral: true });
         }
 
-        const knownKeys = cfg.clockTypes.map(ct => ct.key);
-        const invalid = keys.filter(k => !knownKeys.includes(k));
+        const knownKeys = new Set((cfg.clockTypes || []).map(ct => ct.key));
+        const invalid = typeKeys.filter(k => !knownKeys.has(k));
         if (invalid.length > 0) {
           return interaction.reply({
-            content: `❌ Invalid clock type(s): \`${invalid.join(', ')}\`.\nValid keys: \`${knownKeys.join(', ')}\``,
+            content: `❌ Unknown clock type(s): \`${invalid.join(', ')}\`.\nConfigured types: \`${Array.from(knownKeys).join(', ') || 'none'}\`.`,
             ephemeral: true
           });
         }
 
-        const session = clockIn(guild.id, interaction.user.id, keys);
+        const session = clockIn(guildId, userId, typeKeys);
 
-        // role handling
-        const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-        if (member && cfg.onDutyRoleId) {
+        // Add on-duty role + any configured addRoleIds
+        if (cfg.onDutyRoleId) {
           await member.roles.add(cfg.onDutyRoleId).catch(() => {});
         }
+        for (const ct of cfg.clockTypes || []) {
+          if (typeKeys.includes(ct.key)) {
+            for (const rId of (ct.addRoleIds || [])) {
+              await member.roles.add(rId).catch(() => {});
+            }
+          }
+        }
 
-        await interaction.reply({
-          content: `✅ Clocked in as: **${keys.join(', ')}**.`,
+        await updateDutyBoard(interaction.guild);
+
+        return interaction.reply({
+          content: `✅ Clocked in as **${typeKeys.join(', ')}**.`,
           ephemeral: true
         });
-
-        await updateDutyBoardForGuild(guild);
       }
 
       if (sub === 'out') {
-        const session = clockOut(guild.id, interaction.user.id);
+        const session = clockOut(guildId, userId);
         if (!session) {
-          return interaction.reply({
-            content: '⚠️ You are not currently clocked in.',
-            ephemeral: true
-          });
+          return interaction.reply({ content: '⚠️ You are not clocked in.', ephemeral: true });
         }
 
-        const duration = session.clockOut - session.clockIn;
-
-        const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-        if (member && cfg.onDutyRoleId) {
+        // Remove on-duty role + removeRoleIdsOnOut
+        if (cfg.onDutyRoleId) {
           await member.roles.remove(cfg.onDutyRoleId).catch(() => {});
         }
+        for (const ct of cfg.clockTypes || []) {
+          if ((session.clockTypes || []).includes(ct.key)) {
+            for (const rId of (ct.removeRoleIdsOnOut || [])) {
+              await member.roles.remove(rId).catch(() => {});
+            }
+          }
+        }
 
-        await interaction.reply({
-          content: `✅ Clocked out. Session duration: **${msToHuman(duration)}**.`,
+        await updateDutyBoard(interaction.guild);
+
+        const duration = msToHuman(session.clockOut - session.clockIn);
+        return interaction.reply({
+          content: `✅ Clocked out. Session duration: **${duration}**.`,
           ephemeral: true
         });
-
-        await updateDutyBoardForGuild(guild);
       }
 
       if (sub === 'status') {
-        const openSessions = getOpenSessions(guild.id).filter(
-          s => s.userId === interaction.user.id
-        );
-        if (openSessions.length === 0) {
-          return interaction.reply({
-            content: 'ℹ️ You are not currently on duty.',
-            ephemeral: true
-          });
+        const open = getOpenSessions(guildId).find(s => s.userId === userId);
+        if (!open) {
+          return interaction.reply({ content: 'ℹ️ You are not currently clocked in.', ephemeral: true });
         }
-        const s = openSessions[0];
-        const elapsed = msToHuman(Date.now() - s.clockIn);
+        const elapsed = msToHuman(Date.now() - open.clockIn);
         return interaction.reply({
-          content:
-            `⏱️ On duty as: **${s.clockTypes.join(', ')}**\n` +
-            `Started: <t:${Math.floor(s.clockIn / 1000)}:R>\n` +
-            `Elapsed: **${elapsed}**`,
+          content: `⏱️ You are clocked in as **${(open.clockTypes || []).join(', ')}** for **${elapsed}**.`,
           ephemeral: true
         });
       }
     }
 
-    // TICKET
-    if (interaction.commandName === 'ticket') {
+    // ---- /ticket ----
+    if (commandName === 'ticket') {
       const sub = interaction.options.getSubcommand();
       if (sub === 'close') {
-        const ticket = getTicketByChannel(guild.id, interaction.channelId);
+        const guildId = interaction.guildId;
+        const channel = interaction.channel;
+
+        const ticket = closeTicketByChannel(guildId, channel.id);
         if (!ticket) {
-          return interaction.reply({
-            content: '❌ This channel is not registered as a ticket.',
-            ephemeral: true
-          });
+          return interaction.reply({ content: '⚠️ This channel does not appear to be an open ticket.', ephemeral: true });
         }
 
-        const member = await guild.members.fetch(interaction.user.id);
-        if (!isAdmin(member, cfg)) {
-          return interaction.reply({
-            content: '❌ You do not have permission to close tickets.',
-            ephemeral: true
-          });
-        }
-
-        closeTicket(ticket.id);
-
-        await interaction.reply('✅ Ticket closed. This channel will be deleted in 5 seconds.');
+        await interaction.reply({ content: '✅ Ticket closed. Channel will be deleted in 5 seconds.' });
         setTimeout(() => {
-          interaction.channel.delete('Ticket closed').catch(() => {});
+          channel.delete('Ticket closed via /ticket close').catch(() => {});
         }, 5000);
       }
     }
 
-    // APPLICATIONS
-    if (interaction.commandName === 'app') {
+    // ---- /app ----
+    if (commandName === 'app') {
       const sub = interaction.options.getSubcommand();
-      const member = await guild.members.fetch(interaction.user.id);
-      if (!isAdmin(member, cfg)) {
-        return interaction.reply({
-          content: '❌ You do not have permission to manage applications.',
-          ephemeral: true
-        });
+      const appId = interaction.options.getString('id');
+      const app = getApplicationById(appId);
+      if (!app) {
+        return interaction.reply({ content: '❌ Application not found.', ephemeral: true });
       }
 
+      const guildId = interaction.guildId;
+      const cfg = getGuildConfig(guildId);
+      const appType = (cfg.applicationTypes || []).find(t => t.key === app.typeKey);
+
+      const guild = interaction.guild;
+      const member = await guild.members.fetch(app.userId).catch(() => null);
+
       if (sub === 'approve') {
-        const id = interaction.options.getString('id');
-        const app = getApplicationById(id);
-        if (!app || app.guildId !== guild.id) {
-          return interaction.reply({
-            content: '❌ Application not found for this guild.',
-            ephemeral: true
-          });
-        }
+        decideApplication(appId, 'approved', interaction.user.id);
 
-        decideApplication(id, 'approved', interaction.user.id);
-
-        const typeCfg = cfg.applicationTypes.find(t => t.key === app.type);
-        const targetMember = await guild.members.fetch(app.userId).catch(() => null);
-
-        if (targetMember && typeCfg) {
-          if (typeCfg.addRoleIds && typeCfg.addRoleIds.length > 0) {
-            await targetMember.roles.add(typeCfg.addRoleIds).catch(() => {});
+        if (member && appType) {
+          for (const addId of (appType.addRoleIds || [])) {
+            await member.roles.add(addId).catch(() => {});
           }
-          if (typeCfg.removeRoleIds && typeCfg.removeRoleIds.length > 0) {
-            await targetMember.roles.remove(typeCfg.removeRoleIds).catch(() => {});
+          for (const remId of (appType.removeRoleIds || [])) {
+            await member.roles.remove(remId).catch(() => {});
           }
         }
 
-        await interaction.reply({
-          content: `✅ Application **${id}** approved.`,
-          ephemeral: true
-        });
+        if (member) {
+          member.send(`✅ Your application (**${appType?.label || app.typeKey}**) in **${guild.name}** has been **approved**.`).catch(() => {});
+        }
+
+        return interaction.reply({ content: `✅ Approved application \`${appId}\`.`, ephemeral: true });
       }
 
       if (sub === 'deny') {
-        const id = interaction.options.getString('id');
         const reason = interaction.options.getString('reason');
-        const app = getApplicationById(id);
-        if (!app || app.guildId !== guild.id) {
-          return interaction.reply({
-            content: '❌ Application not found for this guild.',
-            ephemeral: true
-          });
+        decideApplication(appId, 'denied', interaction.user.id);
+
+        if (member) {
+          member.send(
+            `❌ Your application (**${appType?.label || app.typeKey}**) in **${guild.name}** has been **denied**.\nReason: ${reason}`
+          ).catch(() => {});
         }
 
-        decideApplication(id, 'denied', interaction.user.id);
-        await interaction.reply({
-          content: `✅ Application **${id}** denied.\nReason: ${reason}`,
-          ephemeral: true
-        });
-      }
-    }
-
-    // MOD / GLOBAL BAN
-    if (interaction.commandName === 'mod') {
-      const sub = interaction.options.getSubcommand();
-      const member = await interaction.guild.members.fetch(interaction.user.id);
-      if (!isAdmin(member, cfg)) {
-        return interaction.reply({
-          content: '❌ You do not have permission to run moderation commands.',
-          ephemeral: true
-        });
-      }
-
-      if (sub === 'gban') {
-        const user = interaction.options.getUser('user');
-        const reason = interaction.options.getString('reason') || 'No reason provided';
-        addGlobalBan(user.id, reason, interaction.user.id);
-
-        // Kick from all mutual guilds
-        client.guilds.cache.forEach(g => {
-          g.members.fetch(user.id).then(m => {
-            m.kick(`Globally banned: ${reason}`).catch(() => {});
-          }).catch(() => {});
-        });
-
-        await interaction.reply({
-          content: `✅ Globally banned **${user.tag}** (${user.id}).`,
-          ephemeral: true
-        });
-      }
-
-      if (sub === 'ungban') {
-        const userId = interaction.options.getString('userid');
-        removeGlobalBan(userId);
-        await interaction.reply({
-          content: `✅ Removed global ban for user ID **${userId}**.`,
-          ephemeral: true
-        });
+        return interaction.reply({ content: `✅ Denied application \`${appId}\`.`, ephemeral: true });
       }
     }
   }
 
-  // BUTTONS (Panels)
+  // ---- Buttons ----
   if (interaction.isButton()) {
-    const parts = interaction.customId.split(':');
-    if (parts.length < 3) return;
+    const [kind, payload] = interaction.customId.split(':');
 
-    const [kind, guildId, typeKey] = parts;
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) {
-      return interaction.reply({ content: '❌ Guild no longer available.', ephemeral: true });
-    }
-    const cfg = getGuildConfig(guildId);
-
-    // Ticket panel button
-    if (kind === 'ticket') {
-      const typeCfg = cfg.ticketTypes.find(t => t.key === typeKey);
-      if (!typeCfg) {
+    // Ticket panel: open ticket modal
+    if (kind === 'ticket_open') {
+      const guildId = interaction.guildId;
+      const cfg = getGuildConfig(guildId);
+      const ticketType = (cfg.ticketTypes || []).find(t => t.key === payload);
+      if (!ticketType) {
         return interaction.reply({ content: '❌ Ticket type not configured.', ephemeral: true });
       }
 
-      const baseName = `ticket-${typeKey}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '');
+      const modal = new ModalBuilder()
+        .setCustomId(`ticket_modal:${ticketType.key}`)
+        .setTitle(ticketType.label);
+
+      const subjectInput = new TextInputBuilder()
+        .setCustomId('subject')
+        .setLabel('Subject')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const bodyInput = new TextInputBuilder()
+        .setCustomId('body')
+        .setLabel('Describe the issue')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(subjectInput),
+        new ActionRowBuilder().addComponents(bodyInput)
+      );
+
+      return interaction.showModal(modal);
+    }
+
+    // Application panel: open application modal
+    if (kind === 'app_open') {
+      const guildId = interaction.guildId;
+      const cfg = getGuildConfig(guildId);
+      const appType = (cfg.applicationTypes || []).find(t => t.key === payload);
+      if (!appType) {
+        return interaction.reply({ content: '❌ Application type not configured.', ephemeral: true });
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`app_modal:${appType.key}`)
+        .setTitle(appType.label);
+
+      const questions = appType.questions || [];
+      const rows = [];
+
+      questions.slice(0, 5).forEach((q, idx) => {
+        const input = new TextInputBuilder()
+          .setCustomId(`q_${idx}`)
+          .setLabel(q)
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+        rows.push(new ActionRowBuilder().addComponents(input));
+      });
+
+      if (rows.length === 0) {
+        const fallback = new TextInputBuilder()
+          .setCustomId('q_0')
+          .setLabel('Tell us about yourself.')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+        rows.push(new ActionRowBuilder().addComponents(fallback));
+      }
+
+      modal.addComponents(...rows);
+
+      return interaction.showModal(modal);
+    }
+  }
+
+  // ---- Modals ----
+  if (interaction.isModalSubmit()) {
+    const [kind, payload] = interaction.customId.split(':');
+
+    // Ticket modal submit
+    if (kind === 'ticket_modal') {
+      const guildId = interaction.guildId;
+      const cfg = getGuildConfig(guildId);
+      const type = (cfg.ticketTypes || []).find(t => t.key === payload);
+      if (!type) {
+        return interaction.reply({ content: '❌ Ticket type not configured.', ephemeral: true });
+      }
+
+      const subject = interaction.fields.getTextInputValue('subject');
+      const body = interaction.fields.getTextInputValue('body');
+      const guild = interaction.guild;
+
+      // create ticket channel
+      const baseName = `${payload}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '');
+      const channelName = baseName || `ticket-${payload}`;
+
+      const overwrites = [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel]
+        },
+        {
+          id: interaction.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory
+          ]
+        }
+      ];
+
+      // allow configured admin roles
+      for (const rId of (cfg.adminRoleIds || [])) {
+        overwrites.push({
+          id: rId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels
+          ]
+        });
+      }
+
       const channel = await guild.channels.create({
-        name: baseName.substring(0, 90),
+        name: channelName,
         type: ChannelType.GuildText,
-        topic: `Ticket type: ${typeCfg.label} | User: ${interaction.user.tag}`
+        permissionOverwrites: overwrites,
+        topic: `Ticket (${type.label}) for ${interaction.user.tag} — ${subject}`
       });
 
       const ticket = createTicket({
         guildId,
         channelId: channel.id,
         userId: interaction.user.id,
-        type: typeKey
+        type: type.key,
+        subject,
+        body
       });
 
-      // ping roles
-      const pings = (typeCfg.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
+      // ping roles if any
+      const pingText = (type.pingRoleIds || [])
+        .map(id => `<@&${id}>`)
+        .join(' ');
 
       const embed = new EmbedBuilder()
-        .setTitle(`Ticket - ${typeCfg.label}`)
-        .setDescription(typeCfg.template || 'A staff member will be with you shortly.')
+        .setTitle(`Ticket: ${type.label}`)
+        .setDescription(body)
         .addFields(
-          { name: 'User', value: `<@${interaction.user.id}>`, inline: true },
-          { name: 'Ticket ID', value: ticket.id, inline: true }
+          { name: 'User', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: false },
+          { name: 'Subject', value: subject, inline: false },
+          { name: 'Ticket ID', value: ticket.id, inline: false }
         )
-        .setTimestamp(new Date());
+        .setColor(0x3b82f6)
+        .setTimestamp(new Date(ticket.createdAt));
 
       await channel.send({
-        content: pings || undefined,
+        content: pingText || 'New ticket created.',
         embeds: [embed]
       });
 
-      await interaction.reply({
+      return interaction.reply({
         content: `✅ Ticket created: ${channel}`,
         ephemeral: true
       });
     }
 
-    // Application panel button
-    if (kind === 'app') {
-      const typeCfg = cfg.applicationTypes.find(t => t.key === typeKey);
-      if (!typeCfg) {
+    // Application modal submit
+    if (kind === 'app_modal') {
+      const guildId = interaction.guildId;
+      const cfg = getGuildConfig(guildId);
+      const appType = (cfg.applicationTypes || []).find(t => t.key === payload);
+      if (!appType) {
         return interaction.reply({ content: '❌ Application type not configured.', ephemeral: true });
       }
+
+      const qLabels = appType.questions || ['Response'];
+      const answers = [];
+
+      qLabels.slice(0, 5).forEach((label, idx) => {
+        const key = `q_${idx}`;
+        const value = interaction.fields.getTextInputValue(key);
+        answers.push({ label, value });
+      });
 
       const app = createApplication({
         guildId,
         userId: interaction.user.id,
-        type: typeKey,
-        answers: {},
-        roleAddIds: typeCfg.addRoleIds || [],
-        roleRemoveIds: typeCfg.removeRoleIds || []
+        typeKey: appType.key,
+        answers
       });
 
-      const pingText = (typeCfg.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
-
-      // Log to app panel channel if configured
+      // log in applications channel if configured
       if (cfg.applicationPanelChannelId) {
-        const ch = await guild.channels.fetch(cfg.applicationPanelChannelId).catch(() => null);
-        if (ch && ch.isTextBased()) {
-          const embed = new EmbedBuilder()
-            .setTitle(`New Application - ${typeCfg.label}`)
-            .setDescription(`User: <@${interaction.user.id}>\nApplication ID: \`${app.id}\``)
-            .setTimestamp(new Date());
-          await ch.send({ content: pingText || undefined, embeds: [embed] }).catch(() => {});
+        try {
+          const ch = await client.channels.fetch(cfg.applicationPanelChannelId);
+          if (ch && ch.isTextBased()) {
+            const ping = (appType.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
+            const embed = new EmbedBuilder()
+              .setTitle(`Application — ${appType.label}`)
+              .setDescription(`New application from <@${interaction.user.id}>`)
+              .addFields(
+                answers.map(a => ({
+                  name: a.label,
+                  value: a.value || 'N/A',
+                  inline: false
+                }))
+              )
+              .setFooter({ text: `Application ID: ${app.id}` })
+              .setTimestamp(new Date(app.createdAt))
+              .setColor(0x22c55e);
+
+            await ch.send({
+              content: ping || 'New application received.',
+              embeds: [embed]
+            });
+          }
+        } catch (err) {
+          console.error('Error logging application:', err);
         }
       }
 
-      await interaction.reply({
-        content: `✅ Application **${typeCfg.label}** started.\nA staff member will complete review via the admin panel.`,
+      return interaction.reply({
+        content: `✅ Your application for **${appType.label}** has been submitted. Application ID: \`${app.id}\``,
         ephemeral: true
       });
     }
   }
 });
 
-// ---------------------------
-// Express admin backend
-// ---------------------------
+// ------------------------
+// Express + admin panel
+// ------------------------
 const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: false }));
 
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false
-  })
-);
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+
+app.use('/static', express.static(path.join(__dirname, 'public')));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false
+}));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Passport Discord
+// Passport (Discord OAuth)
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-passport.use(
-  new DiscordStrategy(
-    {
-      clientID: DISCORD_CLIENT_ID,
-      clientSecret: DISCORD_CLIENT_SECRET,
-      callbackURL: CALLBACK_URL,
-      scope: ['identify', 'guilds']
-    },
-    (accessToken, refreshToken, profile, done) => {
-      const user = {
-        id: profile.id,
-        username: profile.username,
-        guilds: profile.guilds || []
-      };
-      return done(null, user);
-    }
-  )
-);
+passport.use(new DiscordStrategy(
+  {
+    clientID: DISCORD_CLIENT_ID,
+    clientSecret: DISCORD_CLIENT_SECRET,
+    callbackURL: `${BASE_URL}/auth/discord/callback`,
+    scope: ['identify', 'guilds']
+  },
+  (accessToken, refreshToken, profile, done) => {
+    return done(null, profile);
+  }
+));
 
 // Auth routes
 app.get('/auth/discord', passport.authenticate('discord'));
-
 app.get(
   '/auth/discord/callback',
-  passport.authenticate('discord', {
-    failureRedirect: '/auth/failure'
-  }),
+  passport.authenticate('discord', { failureRedirect: '/auth/fail' }),
   (req, res) => {
     res.redirect('/admin');
   }
 );
-
-app.get('/auth/failure', (req, res) => {
-  res.status(401).send('Discord authentication failed.');
+app.get('/auth/fail', (req, res) => {
+  res.send('Discord authentication failed.');
+});
+app.get('/logout', (req, res) => {
+  req.logout(() => {});
+  req.session.destroy(() => {});
+  res.redirect('/');
 });
 
 // Middleware
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated && req.isAuthenticated()) return next();
-  res.redirect('/auth/discord');
+  return res.redirect('/auth/discord');
 }
 
-function canManageGuild(user, guildId) {
-  if (!user || !user.guilds) return false;
-  const g = user.guilds.find(g => g.id === guildId);
-  if (!g) return false;
-  const perms = BigInt(g.permissions || '0');
-  const ADMINISTRATOR = BigInt(0x0000000000000008);
-  return (perms & ADMINISTRATOR) === ADMINISTRATOR;
-}
-
-// Static admin UI
-app.use('/public', express.static('public'));
-
-// Admin page
-app.get('/admin', ensureAuth, (req, res) => {
-  res.sendFile(require('path').join(__dirname, 'public', 'admin.html'));
-});
-
-// API: current user
-app.get('/api/me', ensureAuth, (req, res) => {
-  res.json({ id: req.user.id, username: req.user.username, guilds: req.user.guilds || [] });
-});
-
-// API: list manageable guilds (where user is admin)
-app.get('/api/guilds', ensureAuth, (req, res) => {
-  const manageable = (req.user.guilds || []).filter(g => {
-    const perms = BigInt(g.permissions || '0');
-    const ADMINISTRATOR = BigInt(0x0000000000000008);
-    return (perms & ADMINISTRATOR) === ADMINISTRATOR;
-  });
-  res.json(manageable);
-});
-
-// API: get guild config
-app.get('/api/guilds/:guildId/config', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const cfg = getGuildConfig(guildId);
-  res.json(cfg);
-});
-
-// API: update guild config (clock types, panel channels, admin roles, etc.)
-app.post('/api/guilds/:guildId/config', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-
-  const patch = req.body || {};
-  const updated = updateGuildConfig(guildId, patch);
-  res.json(updated);
-});
-
-// API: deploy panels (ticket or application) from admin panel
-app.post('/api/guilds/:guildId/deploy-panel', ensureAuth, async (req, res) => {
-  const guildId = req.params.guildId;
-  const { kind } = req.body; // 'ticket' or 'application'
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-
+async function getGuildAndMember(guildId, userId) {
   const guild = client.guilds.cache.get(guildId);
-  if (!guild) return res.status(404).json({ error: 'Guild not found by bot' });
-
-  const cfg = getGuildConfig(guildId);
-
-  if (kind === 'ticket') {
-    if (!cfg.ticketPanelChannelId) {
-      return res.status(400).json({ error: 'ticketPanelChannelId not set in config' });
-    }
-    if (!Array.isArray(cfg.ticketTypes) || cfg.ticketTypes.length === 0) {
-      return res.status(400).json({ error: 'No ticketTypes configured' });
-    }
-
-    const channel = await guild.channels.fetch(cfg.ticketPanelChannelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      return res.status(400).json({ error: 'Invalid ticketPanelChannelId (not a text channel)' });
-    }
-
-    // delete old panel message if exists
-    if (cfg.ticketPanelMessageId) {
-      try {
-        const oldMsg = await channel.messages.fetch(cfg.ticketPanelMessageId);
-        if (oldMsg) await oldMsg.delete();
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('Support Tickets')
-      .setDescription('Click a button below to open a ticket.')
-      .setColor(0x2563eb);
-
-    const rows = [];
-    let currentRow = new ActionRowBuilder();
-    let countInRow = 0;
-
-    cfg.ticketTypes.forEach(t => {
-      const btn = new ButtonBuilder()
-        .setCustomId(`ticket:${guildId}:${t.key}`)
-        .setLabel(t.label || t.key)
-        .setStyle(ButtonStyle.Primary);
-
-      currentRow.addComponents(btn);
-      countInRow++;
-
-      if (countInRow === 5) {
-        rows.push(currentRow);
-        currentRow = new ActionRowBuilder();
-        countInRow = 0;
-      }
-    });
-
-    if (countInRow > 0) rows.push(currentRow);
-
-    const msg = await channel.send({ embeds: [embed], components: rows });
-    cfg.ticketPanelMessageId = msg.id;
-    updateGuildConfig(guildId, cfg);
-
-    return res.json({ ok: true, messageId: msg.id });
+  if (!guild) return { guild: null, member: null };
+  let member = null;
+  try {
+    member = await guild.members.fetch(userId);
+  } catch {
+    member = null;
   }
-
-  if (kind === 'application') {
-    if (!cfg.applicationPanelChannelId) {
-      return res.status(400).json({ error: 'applicationPanelChannelId not set in config' });
-    }
-    if (!Array.isArray(cfg.applicationTypes) || cfg.applicationTypes.length === 0) {
-      return res.status(400).json({ error: 'No applicationTypes configured' });
-    }
-
-    const channel = await guild.channels.fetch(cfg.applicationPanelChannelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      return res.status(400).json({ error: 'Invalid applicationPanelChannelId (not a text channel)' });
-    }
-
-    // delete old panel message if exists
-    if (cfg.applicationPanelMessageId) {
-      try {
-        const oldMsg = await channel.messages.fetch(cfg.applicationPanelMessageId);
-        if (oldMsg) await oldMsg.delete();
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('Applications')
-      .setDescription('Click a button below to start an application.')
-      .setColor(0x22c55e);
-
-    const rows = [];
-    let currentRow = new ActionRowBuilder();
-    let countInRow = 0;
-
-    cfg.applicationTypes.forEach(t => {
-      const btn = new ButtonBuilder()
-        .setCustomId(`app:${guildId}:${t.key}`)
-        .setLabel(t.label || t.key)
-        .setStyle(ButtonStyle.Secondary);
-
-      currentRow.addComponents(btn);
-      countInRow++;
-
-      if (countInRow === 5) {
-        rows.push(currentRow);
-        currentRow = new ActionRowBuilder();
-        countInRow = 0;
-      }
-    });
-
-    if (countInRow > 0) rows.push(currentRow);
-
-    const msg = await channel.send({ embeds: [embed], components: rows });
-    cfg.applicationPanelMessageId = msg.id;
-    updateGuildConfig(guildId, cfg);
-
-    return res.json({ ok: true, messageId: msg.id });
-  }
-
-  return res.status(400).json({ error: 'Unknown kind, expected ticket or application' });
-});
-
-// API: tickets list
-app.get('/api/guilds/:guildId/tickets', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const status = req.query.status || null;
-  const list = listTickets(guildId, { status });
-  res.json(list);
-});
-
-// API: ticket detail
-app.get('/api/guilds/:guildId/tickets/:id', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  const id = req.params.id;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const ticket = getTicketById(id);
-  if (!ticket || ticket.guildId !== guildId) {
-    return res.status(404).json({ error: 'Ticket not found' });
-  }
-  res.json(ticket);
-});
-
-// API: applications list
-app.get('/api/guilds/:guildId/applications', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const status = req.query.status || null;
-  const list = listApplications(guildId, { status });
-  res.json(list);
-});
-
-// API: application detail
-app.get('/api/guilds/:guildId/applications/:id', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  const id = req.params.id;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const appRec = getApplicationById(id);
-  if (!appRec || appRec.guildId !== guildId) {
-    return res.status(404).json({ error: 'Application not found' });
-  }
-  res.json(appRec);
-});
-
-// API: application decision (approve/deny)
-app.post('/api/guilds/:guildId/applications/:id/decision', ensureAuth, async (req, res) => {
-  const guildId = req.params.guildId;
-  const id = req.params.id;
-  const { status } = req.body;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  if (!['approved', 'denied'].includes(status)) {
-    return res.status(400).json({ error: 'Invalid status' });
-  }
-
-  const appRec = decideApplication(id, status, req.user.id);
-  if (!appRec) return res.status(404).json({ error: 'Application not found' });
-
-  // Try to apply roles if approved
-  if (status === 'approved') {
-    const cfg = getGuildConfig(guildId);
-    const guild = client.guilds.cache.get(guildId);
-    if (guild) {
-      const typeCfg = cfg.applicationTypes.find(t => t.key === appRec.type);
-      if (typeCfg) {
-        const member = await guild.members.fetch(appRec.userId).catch(() => null);
-        if (member) {
-          if (typeCfg.addRoleIds && typeCfg.addRoleIds.length > 0) {
-            await member.roles.add(typeCfg.addRoleIds).catch(() => {});
-          }
-          if (typeCfg.removeRoleIds && typeCfg.removeRoleIds.length > 0) {
-            await member.roles.remove(typeCfg.removeRoleIds).catch(() => {});
-          }
-        }
-      }
-    }
-  }
-
-  res.json(appRec);
-});
-
-// API: duty sessions (live board + reports)
-app.get('/api/guilds/:guildId/duty/live', ensureAuth, (req, res) => {
-  const guildId = req.params.guildId;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
-  const sessions = getOpenSessions(guildId);
-  res.json(sessions);
-});
-
-// Simple range: today, week, month
-function getRangeStart(range) {
-  const now = Date.now();
-  const day = 24 * 60 * 60 * 1000;
-  if (range === 'today') {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
-  }
-  if (range === 'week') return now - 7 * day;
-  if (range === 'month') return now - 30 * day;
-  return 0;
+  return { guild, member };
 }
 
-app.get('/api/guilds/:guildId/duty/report', ensureAuth, (req, res) => {
+async function ensureGuildAdmin(req, res, next) {
   const guildId = req.params.guildId;
-  const range = req.query.range || 'week';
-  const clockTypeKey = req.query.clockType || null;
-  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const { guild, member } = await getGuildAndMember(guildId, req.user.id);
+  if (!guild || !member) {
+    return res.status(403).send('You are not in this guild.');
+  }
 
-  const from = getRangeStart(range);
-  const sessions = getSessionsInRange(guildId, from, clockTypeKey);
+  const cfg = getGuildConfig(guildId);
+  const hasAdminRole = (cfg.adminRoleIds || []).some(rid => member.roles.cache.has(rid));
+  const hasManageGuild = member.permissions.has(PermissionFlagsBits.ManageGuild);
 
-  const totals = {};
-  sessions.forEach(s => {
-    const dur = s.clockOut - s.clockIn;
-    if (!totals[s.userId]) totals[s.userId] = 0;
-    totals[s.userId] += dur;
+  if (!hasAdminRole && !hasManageGuild) {
+    return res.status(403).send('You do not have admin access for this guild in the panel.');
+  }
+
+  req.guild = guild;
+  req.guildConfig = cfg;
+  req.guildMember = member;
+  next();
+}
+
+// ------------------------
+// Admin routes
+// ------------------------
+app.get('/', (req, res) => {
+  if (req.isAuthenticated && req.isAuthenticated()) {
+    return res.redirect('/admin');
+  }
+  return res.redirect('/auth/discord');
+});
+
+// List guilds where the bot is present
+app.get('/admin', ensureAuth, async (req, res) => {
+  const guildEntries = [];
+
+  for (const [id, guild] of client.guilds.cache) {
+    let isAdmin = false;
+    try {
+      const member = await guild.members.fetch(req.user.id);
+      const cfg = getGuildConfig(id);
+      const hasAdminRole = (cfg.adminRoleIds || []).some(rid => member.roles.cache.has(rid));
+      const hasManageGuild = member.permissions.has(PermissionFlagsBits.ManageGuild);
+      if (hasAdminRole || hasManageGuild) isAdmin = true;
+    } catch {
+      isAdmin = false;
+    }
+
+    guildEntries.push({
+      id,
+      name: guild.name,
+      isAdmin
+    });
+  }
+
+  res.render('admin/home', {
+    title: 'Guilds',
+    user: req.user,
+    guilds: guildEntries,
+    activeGuild: null,
+    activeTab: null
+  });
+});
+
+// Guild dashboard
+app.get('/admin/guild/:guildId', ensureAuth, ensureGuildAdmin, (req, res) => {
+  const guild = req.guild;
+  const cfg = req.guildConfig;
+
+  const onDutySessions = getOpenSessions(guild.id);
+  const stats = {
+    onDutyCount: onDutySessions.length,
+    openTickets: listTickets(guild.id, { status: 'open' }).length,
+    pendingApplications: listApplications(guild.id, { status: 'pending' }).length
+  };
+
+  const onDuty = onDutySessions.map(s => ({
+    userId: s.userId,
+    clockTypes: s.clockTypes || [],
+    clockIn: s.clockIn,
+    elapsedHuman: msToHuman(Date.now() - s.clockIn)
+  }));
+
+  const recentTickets = listTickets(guild.id).slice(-10).reverse();
+  const recentApps = listApplications(guild.id).slice(-10).reverse();
+
+  res.render('admin/guild_dashboard', {
+    title: `${guild.name} — Dashboard`,
+    user: req.user,
+    activeGuild: { id: guild.id, name: guild.name },
+    activeTab: 'dashboard',
+    stats,
+    onDuty,
+    recentTickets,
+    recentApps
+  });
+});
+
+// Guild config (GET)
+app.get('/admin/guild/:guildId/config', ensureAuth, ensureGuildAdmin, async (req, res) => {
+  const guild = req.guild;
+  const cfg = req.guildConfig;
+
+  const roles = (await guild.roles.fetch()).map(r => ({
+    id: r.id,
+    name: r.name
+  }));
+
+  const channels = guild.channels.cache
+    .filter(ch => ch.type === ChannelType.GuildText)
+    .map(ch => ({
+      id: ch.id,
+      name: ch.name,
+      type: ch.type
+    }));
+
+  res.render('admin/guild_config', {
+    title: `${guild.name} — Configuration`,
+    user: req.user,
+    activeGuild: { id: guild.id, name: guild.name },
+    activeTab: 'config',
+    config: cfg,
+    roles,
+    channels,
+    ticketTypesJson: JSON.stringify(cfg.ticketTypes || [], null, 2),
+    applicationTypesJson: JSON.stringify(cfg.applicationTypes || [], null, 2),
+    clockTypesJson: JSON.stringify(cfg.clockTypes || [], null, 2)
+  });
+});
+
+// Helper to normalize multi-select fields
+function toArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
+// Guild config (POST)
+app.post('/admin/guild/:guildId/config', ensureAuth, ensureGuildAdmin, async (req, res) => {
+  const guild = req.guild;
+  const cfg = req.guildConfig;
+  const body = req.body;
+
+  const adminRoleIds = toArray(body.adminRoleIds).filter(Boolean);
+  const onDutyRoleId = body.onDutyRoleId || null;
+  const clockStatusChannelId = body.clockStatusChannelId || null;
+  const ticketPanelChannelId = body.ticketPanelChannelId || null;
+  const applicationPanelChannelId = body.applicationPanelChannelId || null;
+
+  let ticketTypes = cfg.ticketTypes || [];
+  let applicationTypes = cfg.applicationTypes || [];
+  let clockTypes = cfg.clockTypes || [];
+
+  if (body.ticketTypesJson) {
+    try {
+      const parsed = JSON.parse(body.ticketTypesJson);
+      if (Array.isArray(parsed)) ticketTypes = parsed;
+    } catch (err) {
+      console.error('Invalid ticketTypesJson:', err);
+    }
+  }
+
+  if (body.applicationTypesJson) {
+    try {
+      const parsed = JSON.parse(body.applicationTypesJson);
+      if (Array.isArray(parsed)) applicationTypes = parsed;
+    } catch (err) {
+      console.error('Invalid applicationTypesJson:', err);
+    }
+  }
+
+  if (body.clockTypesJson) {
+    try {
+      const parsed = JSON.parse(body.clockTypesJson);
+      if (Array.isArray(parsed)) clockTypes = parsed;
+    } catch (err) {
+      console.error('Invalid clockTypesJson:', err);
+    }
+  }
+
+  updateGuildConfig(guild.id, {
+    name: guild.name,
+    adminRoleIds,
+    onDutyRoleId,
+    clockStatusChannelId,
+    ticketPanelChannelId,
+    applicationPanelChannelId,
+    ticketTypes,
+    applicationTypes,
+    clockTypes
   });
 
-  res.json({ range, clockTypeKey, totals });
+  res.redirect(`/admin/guild/${guild.id}/config`);
 });
 
-// API: global bans
-app.get('/api/global-bans', ensureAuth, (req, res) => {
-  res.json(listGlobalBans());
+// POST panels from admin (auto-post panels)
+app.post('/admin/guild/:guildId/panels/post', ensureAuth, ensureGuildAdmin, async (req, res) => {
+  const guild = req.guild;
+  const cfg = getGuildConfig(guild.id);
+
+  // Ticket panel
+  if (cfg.ticketPanelChannelId && (cfg.ticketTypes || []).length > 0) {
+    try {
+      const ch = await guild.channels.fetch(cfg.ticketPanelChannelId);
+      if (ch && ch.isTextBased()) {
+        const embed = new EmbedBuilder()
+          .setTitle('Support Tickets')
+          .setDescription('Click a button below to open a ticket.')
+          .setColor(0x3b82f6);
+
+        const buttons = (cfg.ticketTypes || []).map(t =>
+          new ButtonBuilder()
+            .setCustomId(`ticket_open:${t.key}`)
+            .setLabel(t.label || t.key)
+            .setStyle(ButtonStyle.Primary)
+        );
+
+        const rows = [];
+        for (let i = 0; i < buttons.length; i += 5) {
+          rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+        }
+
+        const msg = await ch.send({ embeds: [embed], components: rows });
+        cfg.ticketPanelMessageId = msg.id;
+      }
+    } catch (err) {
+      console.error('Error posting ticket panel:', err);
+    }
+  }
+
+  // Application panel
+  if (cfg.applicationPanelChannelId && (cfg.applicationTypes || []).length > 0) {
+    try {
+      const ch = await guild.channels.fetch(cfg.applicationPanelChannelId);
+      if (ch && ch.isTextBased()) {
+        const embed = new EmbedBuilder()
+          .setTitle('Applications')
+          .setDescription('Click a button below to submit an application.')
+          .setColor(0x22c55e);
+
+        const buttons = (cfg.applicationTypes || []).map(t =>
+          new ButtonBuilder()
+            .setCustomId(`app_open:${t.key}`)
+            .setLabel(t.label || t.key)
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        const rows = [];
+        for (let i = 0; i < buttons.length; i += 5) {
+          rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+        }
+
+        const msg = await ch.send({ embeds: [embed], components: rows });
+        cfg.applicationPanelMessageId = msg.id;
+      }
+    } catch (err) {
+      console.error('Error posting application panel:', err);
+    }
+  }
+
+  // Save back any updated message IDs
+  updateGuildConfig(guild.id, cfg);
+
+  res.redirect(`/admin/guild/${guild.id}`);
 });
 
-// API: current user
-app.get('/api/me', ensureAuth, (req, res) => {
-  res.json({ id: req.user.id, username: req.user.username, guilds: req.user.guilds || [] });
-});
+// Tickets list
+app.get('/admin/guild/:guildId/tickets', ensureAuth, ensureGuildAdmin, (req, res) => {
+  const guild = req.guild;
+  const status = req.query.status || null;
+  const tickets = listTickets(guild.id, status ? { status } : {});
 
-// Admin logout
-app.post('/api/logout', ensureAuth, (req, res) => {
-  req.logout(() => {
-    res.json({ ok: true });
+  res.render('admin/tickets', {
+    title: `${guild.name} — Tickets`,
+    user: req.user,
+    activeGuild: { id: guild.id, name: guild.name },
+    activeTab: 'tickets',
+    tickets,
+    filterStatus: status
   });
 });
 
-// Static admin UI
-app.use('/public', express.static('public'));
+// Applications list
+app.get('/admin/guild/:guildId/applications', ensureAuth, ensureGuildAdmin, (req, res) => {
+  const guild = req.guild;
+  const status = req.query.status || 'pending';
+  const apps = listApplications(guild.id, status ? { status } : {});
 
-// MAIN admin page already defined above
+  res.render('admin/applications', {
+    title: `${guild.name} — Applications`,
+    user: req.user,
+    activeGuild: { id: guild.id, name: guild.name },
+    activeTab: 'applications',
+    applications: apps,
+    filterStatus: status
+  });
+});
 
-// Start server
-const PORT = process.env.PORT || 10000;
+// ------------------------
+// Start HTTP + Discord
+// ------------------------
 app.listen(PORT, () => {
   console.log(`🌐 Admin dashboard listening on port ${PORT}`);
+  console.log(`🌐 Using Discord OAuth callback URL: ${BASE_URL}/auth/discord/callback`);
 });
 
-// Start Discord bot
 client.login(DISCORD_TOKEN);
