@@ -1,725 +1,408 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>SALEA Management Panel</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="UTF-8">
+  <title>SALEA Management Admin</title>
   <style>
-    :root {
-      color-scheme: dark;
-    }
     body {
-      margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0b0c10;
+      background: #0f172a;
       color: #e5e7eb;
-      display: flex;
-      min-height: 100vh;
-    }
-    .sidebar {
-      width: 260px;
-      background: #111827;
-      border-right: 1px solid #1f2933;
-      padding: 16px;
-      box-sizing: border-box;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .sidebar h1 {
-      font-size: 18px;
       margin: 0;
+      padding: 0;
     }
-    .sidebar small {
-      color: #9ca3af;
-    }
-    .sidebar button,
-    .sidebar a.btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: none;
-      background: #2563eb;
-      color: white;
-      font-size: 13px;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .sidebar button:hover,
-    .sidebar a.btn:hover {
-      background: #1d4ed8;
-    }
-    .user-card {
-      padding: 10px 12px;
+    header {
       background: #020617;
-      border-radius: 8px;
-      border: 1px solid #1f2933;
-      font-size: 13px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .user-card span.label {
-      color: #9ca3af;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    .main {
-      flex: 1;
-      padding: 20px 24px;
-      box-sizing: border-box;
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-    }
-    .top-row {
+      padding: 12px 20px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
+      border-bottom: 1px solid #1f2937;
     }
-    .guild-select {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      min-width: 260px;
+    .logo {
+      font-weight: 700;
+      font-size: 18px;
     }
-    .guild-select label {
-      font-size: 12px;
-      color: #9ca3af;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    select {
-      background: #020617;
-      border: 1px solid #1f2933;
-      color: #e5e7eb;
-      border-radius: 6px;
-      padding: 6px 8px;
-      font-size: 13px;
-      min-height: 32px;
-    }
-    select:focus {
-      outline: 1px solid #2563eb;
-      outline-offset: 1px;
+    .container {
+      padding: 16px 24px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 16px;
     }
     .card {
       background: #020617;
-      border-radius: 10px;
-      border: 1px solid #1f2933;
-      padding: 16px 18px;
-      box-sizing: border-box;
+      border-radius: 12px;
+      padding: 12px 14px;
+      border: 1px solid #1f2937;
+      margin-bottom: 10px;
     }
-    .card h2 {
-      margin: 0 0 8px 0;
+    h2, h3 {
+      margin-top: 0;
       font-size: 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      color: #f9fafb;
     }
-    .card h2 span.badge {
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      background: #111827;
-      border: 1px solid #1f2933;
-      color: #9ca3af;
-      text-transform: uppercase;
-      letter-spacing: 0.09em;
-    }
-    .card p.sub {
-      margin: 0 0 10px 0;
+    label {
       font-size: 13px;
       color: #9ca3af;
+      display: block;
+      margin-bottom: 4px;
     }
-    .role-list {
-      max-height: 260px;
-      overflow: auto;
-      border-radius: 8px;
-      border: 1px solid #111827;
+    select, textarea, input {
+      width: 100%;
       background: #020617;
-      padding: 4px;
-      box-sizing: border-box;
-    }
-    .role-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 4px 6px;
       border-radius: 6px;
+      border: 1px solid #374151;
+      color: #e5e7eb;
+      padding: 6px 8px;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 10px;
       font-size: 13px;
       cursor: pointer;
     }
-    .role-item:hover {
-      background: #111827;
+    button.secondary {
+      background: #4b5563;
     }
-    .role-name {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
     }
-    .role-pill {
-      padding: 1px 6px;
-      font-size: 11px;
-      border-radius: 999px;
-      background: #111827;
-      border: 1px solid #1f2933;
-      color: #9ca3af;
-    }
-    .role-item input[type="checkbox"] {
-      accent-color: #2563eb;
-    }
-    .card-footer {
-      margin-top: 10px;
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-    }
-    .btn-secondary {
-      background: #111827;
-      color: #e5e7eb;
-      border: 1px solid #1f2933;
-    }
-    .btn-secondary:hover {
+    pre {
       background: #020617;
-    }
-    .status {
+      border-radius: 8px;
+      padding: 8px;
       font-size: 12px;
-      color: #9ca3af;
-      margin-top: 6px;
-    }
-    .status.ok {
-      color: #22c55e;
-    }
-    .status.error {
-      color: #f97373;
-    }
-    .pill-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 6px;
+      overflow-x: auto;
     }
     .pill {
-      padding: 2px 8px;
-      font-size: 11px;
+      display: inline-block;
+      padding: 2px 6px;
       border-radius: 999px;
-      background: #111827;
-      border: 1px solid #1f2933;
+      font-size: 11px;
+      margin-right: 4px;
+      margin-bottom: 2px;
+    }
+    .pill.open { background: #064e3b; color: #bbf7d0; }
+    .pill.closed { background: #4b5563; color: #e5e7eb; }
+    .pill.pending { background: #78350f; color: #fed7aa; }
+    .pill.approved { background: #14532d; color: #bbf7d0; }
+    .pill.denied { background: #7f1d1d; color: #fecaca; }
+    .list {
+      max-height: 260px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    .row {
+      border-bottom: 1px solid #1f2937;
+      padding: 4px 0;
+    }
+    .small {
+      font-size: 12px;
       color: #9ca3af;
     }
-    .section-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
-      gap: 16px;
-      align-items: start;
+    .tag {
+      font-size: 11px;
+      color: #9ca3af;
     }
-    @media (max-width: 900px) {
-      body {
-        flex-direction: column;
-      }
-      .sidebar {
-        width: 100%;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-      }
-      .main {
-        padding: 14px 14px 22px;
-      }
-      .section-grid {
-        grid-template-columns: minmax(0, 1fr);
-      }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
     }
   </style>
 </head>
 <body>
-  <div class="sidebar">
-    <div>
-      <h1>SALEA Admin</h1>
-      <small id="brandGuild">Multi-Guild Control</small>
-    </div>
-    <div class="user-card" id="userCard" style="display: none;">
-      <span class="label">Logged in as</span>
-      <div id="userMain"></div>
-      <div id="userTag" style="font-size: 12px; color:#9ca3af;"></div>
-      <div id="userGuildSummary" style="font-size: 12px; margin-top:4px;"></div>
-    </div>
-    <div id="loginBlock">
-      <a href="/auth/discord" class="btn">Login with Discord</a>
-    </div>
-    <button id="logoutBtn" style="display:none;" onclick="handleLogout()">Log out</button>
-  </div>
+<header>
+  <div class="logo">SALEA Management Admin</div>
+  <div id="user-info" class="small">Loading...</div>
+</header>
 
-  <div class="main">
-    <div class="top-row">
-      <div class="guild-select">
-        <label for="guildSelect">Active Guild</label>
-        <select id="guildSelect" disabled>
-          <option>Loading…</option>
-        </select>
-        <div class="status" id="guildStatus"></div>
-      </div>
-      <div>
-        <div style="font-size:12px;color:#9ca3af;">Tip</div>
-        <div style="font-size:13px;color:#e5e7eb;">
-          Only guilds where you have <strong>--High Command--</strong> or a configured admin role will appear.
-        </div>
-      </div>
+<div class="container">
+  <!-- Left column: guild + config -->
+  <div>
+    <div class="card">
+      <h2>1. Guild</h2>
+      <label for="guild-select">Select guild</label>
+      <select id="guild-select"></select>
+      <button id="reload-guild">Reload</button>
     </div>
 
-    <div class="section-grid">
-      <!-- Admin Role Management -->
-      <div class="card">
-        <h2>
-          Admin Roles
-          <span class="badge">PER-GUILD</span>
-        </h2>
-        <p class="sub">
-          Select which Discord roles count as <strong>panel admins</strong> for the active guild.
-          Anyone with these roles (or <code>--High Command--</code>) can access the admin dashboard.
-        </p>
-
-        <div id="rolesContainer">
-          <div class="status">Select a guild to view roles.</div>
-        </div>
-
-        <div class="card-footer">
-          <button class="btn-secondary" type="button" onclick="reloadGuilds()">Refresh Roles</button>
-          <button type="button" onclick="saveAdminRoles()">Save Admin Roles</button>
-        </div>
-        <div class="status" id="rolesStatus"></div>
+    <div class="card">
+      <div class="section-header">
+        <h3>2. Guild Config (raw)</h3>
+        <button id="save-config" class="secondary">Save</button>
       </div>
-
-      <!-- Current Admin Rights Summary -->
-      <div class="card">
-        <h2>
-          Admin Overview
-          <span class="badge">YOU</span>
-        </h2>
-        <p class="sub">
-          This shows which guilds you can manage in this session and a quick summary of the active guild’s admin roles.
-        </p>
-        <div>
-          <div style="font-size:12px;color:#9ca3af;">You are an admin in:</div>
-          <div id="adminGuildList" class="pill-row"></div>
-        </div>
-        <div style="margin-top:10px;">
-          <div style="font-size:12px;color:#9ca3af;">Active guild admin roles:</div>
-          <div id="activeAdminRoles" class="pill-row"></div>
-        </div>
-      </div>
-
-      <!-- Feature Toggles -->
-      <div class="card">
-        <h2>
-          Features
-          <span class="badge">PER-GUILD</span>
-        </h2>
-        <p class="sub">
-          Turn individual modules on or off for the active guild. This affects slash commands and panels.
-        </p>
-
-        <div id="featuresContainer">
-          <div class="status">Select a guild to view features.</div>
-        </div>
-
-        <div class="card-footer">
-          <button class="btn-secondary" type="button" onclick="reloadFeatures()">Reset</button>
-          <button type="button" onclick="saveFeatures()">Save Features</button>
-        </div>
-        <div class="status" id="featuresStatus"></div>
+      <textarea id="config-json" rows="16" spellcheck="false"></textarea>
+      <div class="small">
+        Edit JSON to manage:
+        <ul>
+          <li><code>adminRoleIds</code> – roles that can use bot admin commands</li>
+          <li><code>clockTypes</code> – keys, labels, and on-duty role behavior</li>
+          <li><code>onDutyRoleId</code>, <code>clockStatusChannelId</code></li>
+          <li><code>ticketTypes</code>, <code>ticketPanelChannelId</code></li>
+          <li><code>applicationTypes</code>, <code>applicationPanelChannelId</code></li>
+        </ul>
       </div>
     </div>
   </div>
 
-  <script>
-    let me = null;
-    let guilds = [];
-    let loading = false;
+  <!-- Right column: live board, tickets, apps -->
+  <div>
+    <div class="card">
+      <div class="section-header">
+        <h3>3. Live On-Duty Board</h3>
+        <button id="refresh-duty" class="secondary">Refresh</button>
+      </div>
+      <div id="duty-live" class="list small">No guild selected.</div>
+    </div>
 
-    async function api(path, options = {}) {
-      const res = await fetch(path, {
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        ...options,
-        body: options.body ? JSON.stringify(options.body) : undefined
-      });
+    <div class="card">
+      <div class="section-header">
+        <h3>4. Tickets</h3>
+        <button id="refresh-tickets" class="secondary">Refresh</button>
+      </div>
+      <div id="tickets" class="list small">No guild selected.</div>
+    </div>
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || res.statusText || 'Request failed');
-      }
-      try {
-        return await res.json();
-      } catch {
-        return null;
-      }
-    }
+    <div class="card">
+      <div class="section-header">
+        <h3>5. Applications</h3>
+        <button id="refresh-apps" class="secondary">Refresh</button>
+      </div>
+      <div id="apps" class="list small">No guild selected.</div>
+    </div>
+  </div>
+</div>
 
-    function setStatus(id, msg, type = '') {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.textContent = msg || '';
-      el.classList.remove('ok', 'error');
-      if (type) el.classList.add(type);
-    }
+<script>
+  const guildSelect = document.getElementById('guild-select');
+  const userInfo = document.getElementById('user-info');
+  const configJson = document.getElementById('config-json');
+  const dutyLiveDiv = document.getElementById('duty-live');
+  const ticketsDiv = document.getElementById('tickets');
+  const appsDiv = document.getElementById('apps');
 
-    async function loadMe() {
-      try {
-        const data = await api('/api/me');
-        me = data;
-        document.getElementById('loginBlock').style.display = 'none';
-        document.getElementById('logoutBtn').style.display = 'inline-flex';
-        document.getElementById('userCard').style.display = 'flex';
+  let me = null;
+  let currentGuildId = null;
 
-        document.getElementById('userMain').textContent = data.user.username;
-        document.getElementById('userTag').textContent = data.user.id;
-
-        const count = (data.adminGuilds || []).length;
-        document.getElementById('userGuildSummary').textContent =
-          count === 1
-            ? 'Admin in 1 guild'
-            : `Admin in ${count} guilds`;
-
-        await loadGuilds();
-      } catch (err) {
-        // Not authenticated
-        document.getElementById('loginBlock').style.display = 'block';
-        document.getElementById('logoutBtn').style.display = 'none';
-        document.getElementById('userCard').style.display = 'none';
-        const sel = document.getElementById('guildSelect');
-        sel.disabled = true;
-        sel.innerHTML = '<option>Login to manage guilds</option>';
-      }
-    }
-
-    async function loadGuilds() {
-      loading = true;
-      setStatus('guildStatus', 'Loading guilds…');
-      setStatus('rolesStatus', '');
-      setStatus('featuresStatus', '');
-      try {
-        const data = await api('/api/guilds');
-        guilds = data || [];
-
-        const sel = document.getElementById('guildSelect');
-        sel.innerHTML = '';
-        if (!guilds.length) {
-          sel.disabled = true;
-          sel.innerHTML = '<option>No admin guilds found</option>';
-          setStatus('guildStatus', 'You do not appear as admin in any guild.', 'error');
-          document.getElementById('rolesContainer').innerHTML =
-            '<div class="status error">No roles to show (no admin guilds).</div>';
-          document.getElementById('adminGuildList').innerHTML = '';
-          document.getElementById('activeAdminRoles').innerHTML = '';
-          document.getElementById('featuresContainer').innerHTML =
-            '<div class="status error">No features to show (no admin guilds).</div>';
-          return;
-        }
-
-        const activeId = me?.activeGuildId;
-        guilds.forEach(g => {
-          const opt = document.createElement('option');
-          opt.value = g.id;
-          opt.textContent = g.name;
-          if (activeId && g.id === activeId) {
-            opt.selected = true;
-          }
-          sel.appendChild(opt);
-        });
-
-        sel.disabled = false;
-        sel.onchange = onGuildChange;
-
-        updateGuildSummaryUI();
-        await renderRolesForActiveGuild();
-        await loadFeaturesForActiveGuild();
-
-        setStatus('guildStatus', 'Guilds loaded.', 'ok');
-      } catch (err) {
-        console.error('loadGuilds error:', err);
-        setStatus('guildStatus', 'Failed to load guilds.', 'error');
-      } finally {
-        loading = false;
-      }
-    }
-
-    function updateGuildSummaryUI() {
-      const listEl = document.getElementById('adminGuildList');
-      listEl.innerHTML = '';
-      const adminGuilds = me?.adminGuilds || [];
-      adminGuilds.forEach(g => {
-        const span = document.createElement('div');
-        span.className = 'pill';
-        span.textContent = g.name;
-        listEl.appendChild(span);
-      });
-
-      renderActiveGuildAdminPills();
-    }
-
-    function renderActiveGuildAdminPills() {
-      const activeId = document.getElementById('guildSelect').value;
-      const guild = guilds.find(g => g.id === activeId);
-      const container = document.getElementById('activeAdminRoles');
-      container.innerHTML = '';
-
-      if (!guild) return;
-
-      const adminIds = new Set(guild.adminRoleIds || []);
-      if (!guild.roles || !guild.roles.length) {
-        container.innerHTML =
-          '<div class="status">No roles cached yet for this guild.</div>';
-        return;
-      }
-
-      adminIds.forEach(id => {
-        const role = guild.roles.find(r => r.id === id);
-        if (!role) return;
-        const pill = document.createElement('div');
-        pill.className = 'pill';
-        pill.textContent = role.name;
-        container.appendChild(pill);
-      });
-
-      if (!adminIds.size) {
-        container.innerHTML =
-          '<div class="status">No custom admin roles for this guild (only <code>--High Command--</code> can access).</div>';
-      }
-    }
-
-    async function renderRolesForActiveGuild() {
-      const activeId = document.getElementById('guildSelect').value;
-      const container = document.getElementById('rolesContainer');
-      container.innerHTML = '';
-
-      const guild = guilds.find(g => g.id === activeId);
-      if (!guild) {
-        container.innerHTML = '<div class="status">Select a guild to view roles.</div>';
-        return;
-      }
-
-      if (!guild.roles || !guild.roles.length) {
-        container.innerHTML =
-          '<div class="status">No roles found for this guild (bot might not see roles yet).</div>';
-        return;
-      }
-
-      const adminIdsSet = new Set(guild.adminRoleIds || []);
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'role-list';
-
-      guild.roles
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .forEach(role => {
-          if (role.name === '@everyone') return;
-
-          const item = document.createElement('div');
-          item.className = 'role-item';
-
-          const left = document.createElement('div');
-          left.className = 'role-name';
-
-          const name = document.createElement('span');
-          name.textContent = role.name;
-
-          const pill = document.createElement('span');
-          pill.className = 'role-pill';
-          pill.textContent = role.id;
-
-          left.appendChild(name);
-          left.appendChild(pill);
-
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.checked = adminIdsSet.has(role.id);
-          checkbox.dataset.roleId = role.id;
-
-          item.appendChild(left);
-          item.appendChild(checkbox);
-
-          item.addEventListener('click', e => {
-            if (e.target.tagName.toLowerCase() === 'input') return;
-            checkbox.checked = !checkbox.checked;
-          });
-
-          wrapper.appendChild(item);
-        });
-
-      container.appendChild(wrapper);
-      renderActiveGuildAdminPills();
-    }
-
-    async function onGuildChange() {
-      if (loading) return;
-      const guildId = document.getElementById('guildSelect').value;
-      try {
-        await api('/api/select-guild', {
-          method: 'POST',
-          body: { guildId }
-        });
-        if (me) me.activeGuildId = guildId;
-        setStatus('guildStatus', 'Active guild updated.', 'ok');
-        await loadGuilds();
-      } catch (err) {
-        console.error('select-guild error:', err);
-        setStatus('guildStatus', 'Failed to switch guild.', 'error');
-      }
-    }
-
-    async function saveAdminRoles() {
-      const activeId = document.getElementById('guildSelect').value;
-      const guild = guilds.find(g => g.id === activeId);
-      if (!guild) {
-        setStatus('rolesStatus', 'No active guild selected.', 'error');
-        return;
-      }
-
-      const checkboxes = document.querySelectorAll(
-        '#rolesContainer input[type="checkbox"][data-role-id]'
-      );
-      const roleIds = [];
-      checkboxes.forEach(cb => {
-        if (cb.checked) roleIds.push(cb.dataset.roleId);
-      });
-
-      try {
-        setStatus('rolesStatus', 'Saving…');
-        const res = await api(`/api/guilds/${activeId}/admin-roles`, {
-          method: 'POST',
-          body: { roleIds }
-        });
-
-        const idx = guilds.findIndex(g => g.id === activeId);
-        if (idx !== -1) {
-          guilds[idx].adminRoleIds = res.adminRoleIds || [];
-        }
-
-        setStatus('rolesStatus', 'Admin roles saved.', 'ok');
-        renderActiveGuildAdminPills();
-      } catch (err) {
-        console.error('saveAdminRoles error:', err);
-        setStatus('rolesStatus', 'Failed to save admin roles.', 'error');
-      }
-    }
-
-    async function loadFeaturesForActiveGuild() {
-      const select = document.getElementById('guildSelect');
-      const guildId = select.value;
-      const container = document.getElementById('featuresContainer');
-      container.innerHTML = '<div class="status">Loading features…</div>';
-      setStatus('featuresStatus', '');
-
-      if (!guildId || guildId === 'null') {
-        container.innerHTML = '<div class="status">Select a guild to view features.</div>';
-        return;
-      }
-
-      try {
-        const features = await api(`/api/guilds/${guildId}/features`);
-        renderFeatures(features);
-        setStatus('featuresStatus', 'Features loaded.', 'ok');
-      } catch (err) {
-        console.error('loadFeatures error:', err);
-        container.innerHTML = '<div class="status error">Failed to load features.</div>';
-        setStatus('featuresStatus', 'Failed to load features.', 'error');
-      }
-    }
-
-    function renderFeatures(features) {
-      const container = document.getElementById('featuresContainer');
-      container.innerHTML = '';
-
-      const rows = [
-        { key: 'applications', label: 'Applications' },
-        { key: 'tickets',      label: 'Tickets' },
-        { key: 'reports',      label: 'Reports & Logs' },
-        { key: 'clock',        label: 'Duty Clock' },
-        { key: 'requests',     label: 'Roster / Role Requests' },
-        { key: 'autoPanels',   label: 'Auto Setup Panels on Join' },
-      ];
-
-      const wrap = document.createElement('div');
-      wrap.style.display = 'flex';
-      wrap.style.flexDirection = 'column';
-      wrap.style.gap = '6px';
-
-      rows.forEach(row => {
-        const line = document.createElement('div');
-        line.style.display = 'flex';
-        line.style.alignItems = 'center';
-        line.style.justifyContent = 'space-between';
-        line.style.fontSize = '13px';
-
-        const label = document.createElement('span');
-        label.textContent = row.label;
-
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.dataset.featureKey = row.key;
-        cb.checked = (features && typeof features[row.key] !== 'undefined')
-          ? !!features[row.key]
-          : true;
-
-        line.appendChild(label);
-        line.appendChild(cb);
-        wrap.appendChild(line);
-      });
-
-      container.appendChild(wrap);
-    }
-
-    async function saveFeatures() {
-      const select = document.getElementById('guildSelect');
-      const guildId = select.value;
-      if (!guildId || guildId === 'null') {
-        setStatus('featuresStatus', 'No active guild selected.', 'error');
-        return;
-      }
-
-      const checkboxes = document.querySelectorAll('#featuresContainer input[type="checkbox"][data-feature-key]');
-      const body = {};
-      checkboxes.forEach(cb => {
-        body[cb.dataset.featureKey] = cb.checked;
-      });
-
-      try {
-        setStatus('featuresStatus', 'Saving…');
-        await api(`/api/guilds/${guildId}/features`, {
-          method: 'POST',
-          body,
-        });
-        setStatus('featuresStatus', 'Features saved.', 'ok');
-      } catch (err) {
-        console.error('saveFeatures error:', err);
-        setStatus('featuresStatus', 'Failed to save features.', 'error');
-      }
-    }
-
-    async function reloadFeatures() {
-      await loadFeaturesForActiveGuild();
-    }
-
-    async function reloadGuilds() {
-      await loadMe();
-    }
-
-    function handleLogout() {
-      window.location.href = '/logout';
-    }
-
-    window.addEventListener('DOMContentLoaded', () => {
-      loadMe();
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      ...options
     });
-  </script>
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  }
+
+  async function loadMe() {
+    try {
+      me = await api('/api/me');
+      userInfo.textContent = `${me.username} (${me.id})`;
+    } catch (err) {
+      userInfo.textContent = 'Not authenticated. Redirecting...';
+      setTimeout(() => {
+        window.location.href = '/auth/discord';
+      }, 800);
+    }
+  }
+
+  async function loadGuilds() {
+    const guilds = await api('/api/guilds');
+    guildSelect.innerHTML = '';
+    const optDefault = document.createElement('option');
+    optDefault.value = '';
+    optDefault.textContent = '-- Select guild --';
+    guildSelect.appendChild(optDefault);
+    guilds.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.id;
+      opt.textContent = `${g.name} (${g.id})`;
+      guildSelect.appendChild(opt);
+    });
+  }
+
+  async function loadGuildConfig() {
+    if (!currentGuildId) {
+      configJson.value = '';
+      return;
+    }
+    const cfg = await api(`/api/guilds/${currentGuildId}/config`);
+    configJson.value = JSON.stringify(cfg, null, 2);
+  }
+
+  async function saveGuildConfig() {
+    if (!currentGuildId) return;
+    try {
+      const payload = JSON.parse(configJson.value);
+      const updated = await api(`/api/guilds/${currentGuildId}/config`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      alert('Saved config.');
+      configJson.value = JSON.stringify(updated, null, 2);
+    } catch (err) {
+      alert('Error saving config: ' + err.message);
+    }
+  }
+
+  function fmtTime(ms) {
+    const d = new Date(ms);
+    return d.toLocaleString();
+  }
+
+  function humanDuration(ms) {
+    const sec = Math.floor(ms / 1000);
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (!h && !m) return '0m';
+    const parts = [];
+    if (h) parts.push(h + 'h');
+    if (m) parts.push(m + 'm');
+    return parts.join(' ');
+  }
+
+  async function loadDutyLive() {
+    if (!currentGuildId) {
+      dutyLiveDiv.textContent = 'No guild selected.';
+      return;
+    }
+    const sessions = await api(`/api/guilds/${currentGuildId}/duty/live`);
+    if (!sessions.length) {
+      dutyLiveDiv.textContent = 'No one is currently on duty.';
+      return;
+    }
+    dutyLiveDiv.innerHTML = '';
+    sessions.forEach(s => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const since = new Date(s.clockIn).toLocaleTimeString();
+      const elapsed = humanDuration(Date.now() - s.clockIn);
+      row.innerHTML = `
+        <div><strong>${s.userId}</strong> – ${s.clockTypes.join(', ')}</div>
+        <div class="small">Since: ${since} • Elapsed: ${elapsed}</div>
+      `;
+      dutyLiveDiv.appendChild(row);
+    });
+  }
+
+  async function loadTickets() {
+    if (!currentGuildId) {
+      ticketsDiv.textContent = 'No guild selected.';
+      return;
+    }
+    const tickets = await api(`/api/guilds/${currentGuildId}/tickets?status=open`);
+    if (!tickets.length) {
+      ticketsDiv.textContent = 'No open tickets.';
+      return;
+    }
+    ticketsDiv.innerHTML = '';
+    tickets.forEach(t => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `
+        <div>
+          <span class="pill open">OPEN</span>
+          <strong>${t.id}</strong> – ${t.type}
+        </div>
+        <div class="small">
+          User: ${t.userId} • Channel: ${t.channelId} • Created: ${fmtTime(t.createdAt)}
+        </div>
+      `;
+      ticketsDiv.appendChild(row);
+    });
+  }
+
+  async function loadApps() {
+    if (!currentGuildId) {
+      appsDiv.textContent = 'No guild selected.';
+      return;
+    }
+    const apps = await api(`/api/guilds/${currentGuildId}/applications?status=pending`);
+    if (!apps.length) {
+      appsDiv.textContent = 'No pending applications.';
+      return;
+    }
+    appsDiv.innerHTML = '';
+    apps.forEach(a => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const id = a.id;
+      row.innerHTML = `
+        <div>
+          <span class="pill pending">PENDING</span>
+          <strong>${id}</strong> – ${a.type}
+        </div>
+        <div class="small">
+          User: ${a.userId} • Created: ${fmtTime(a.createdAt)}
+        </div>
+        <div class="small">
+          <button data-app-id="${id}" data-action="approve">Approve</button>
+          <button data-app-id="${id}" data-action="deny" class="secondary">Deny</button>
+        </div>
+      `;
+      appsDiv.appendChild(row);
+    });
+
+    appsDiv.querySelectorAll('button[data-app-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-app-id');
+        const action = btn.getAttribute('data-action');
+        let body = { status: action === 'approve' ? 'approved' : 'denied' };
+        if (action === 'deny') {
+          const reason = prompt('Reason for denial?') || 'No reason provided';
+          body.reason = reason;
+        }
+        try {
+          await api(`/api/guilds/${currentGuildId}/applications/${id}/decision`, {
+            method: 'POST',
+            body: JSON.stringify(body)
+          });
+          alert(`Application ${id} ${body.status}.`);
+          loadApps();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      });
+    });
+  }
+
+  guildSelect.addEventListener('change', async () => {
+    currentGuildId = guildSelect.value || null;
+    if (!currentGuildId) {
+      configJson.value = '';
+      dutyLiveDiv.textContent = 'No guild selected.';
+      ticketsDiv.textContent = 'No guild selected.';
+      appsDiv.textContent = 'No guild selected.';
+      return;
+    }
+    await loadGuildConfig();
+    await loadDutyLive();
+    await loadTickets();
+    await loadApps();
+  });
+
+  document.getElementById('reload-guild').addEventListener('click', async () => {
+    if (!currentGuildId) return;
+    await loadGuildConfig();
+  });
+
+  document.getElementById('save-config').addEventListener('click', saveGuildConfig);
+  document.getElementById('refresh-duty').addEventListener('click', loadDutyLive);
+  document.getElementById('refresh-tickets').addEventListener('click', loadTickets);
+  document.getElementById('refresh-apps').addEventListener('click', loadApps);
+
+  (async function init() {
+    await loadMe();
+    await loadGuilds();
+  })();
+</script>
 </body>
 </html>
