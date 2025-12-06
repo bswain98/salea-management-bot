@@ -43,6 +43,12 @@ const {
   getAllOpenSessions
 } = require('./storage');
 
+const {
+  getGuildConfig,
+  setGuildAdminRoles,
+  getAllGuildConfigs
+} = require('./guildStorage');
+
 const config = require('./config.json');
 
 // Prefer env vars (Render) and fall back to config.json
@@ -1231,3 +1237,4 @@ if (!BOT_TOKEN) {
 } else {
   client.login(BOT_TOKEN);
 }
+
