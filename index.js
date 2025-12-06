@@ -424,29 +424,24 @@ const CALLBACK_URL =
   'https://salea-management-bot.onrender.com/auth/discord/callback';
 
 passport.use(
-  'discord',
-  new OAuth2Strategy(
+  new DiscordStrategy(
     {
-      authorizationURL: 'https://discord.com/api/oauth2/authorize',
-      tokenURL: 'https://discord.com/api/oauth2/token',
-      clientID: DISCORD_CLIENT_ID,
-      clientSecret: DISCORD_CLIENT_SECRET,
-      callbackURL: DISCORD_CALLBACK_URL,
-      scope: ['identify'],
+      clientID: process.env.DISCORD_CLIENT_ID,
+      clientSecret: process.env.DISCORD_CLIENT_SECRET,
+      callbackURL: CALLBACK_URL,
+      scope: ['identify', 'guilds'],
     },
-    async (accessToken, refreshToken, params, profile, done) => {
+    async (accessToken, refreshToken, profile, done) => {
       try {
-        const resp = await fetch('https://discord.com/api/users/@me', {
+       const resp = await fetch('https://discord.com/api/users/@me', {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
         });
         if (!resp.ok) {
-          return done(new Error('Failed to fetch Discord user profile'));
-        }
-        const user = await resp.json();
-        return done(null, user);
+        return done(null, { id: profile.id, username: profile.username });
       } catch (err) {
+        console.error('OAuth verify error:', err);
         return done(err);
       }
     }
@@ -1632,6 +1627,7 @@ client.on(Events.InteractionCreate, async interaction => {
 // ---------------------------
 
 client.login(process.env.DISCORD_TOKEN);
+
 
 
 
