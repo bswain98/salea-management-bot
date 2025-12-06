@@ -4,313 +4,251 @@ const path = require('path');
 
 const DATA_FILE = path.join(__dirname, 'data.json');
 
+let data = {
+  guilds: {},     // guildId -> { config }
+  tickets: [],    // { id, guildId, channelId, userId, type, status, createdAt, closedAt }
+  applications: [], // { id, guildId, userId, type, answers, status, createdAt, decidedAt, decidedBy, roleAddIds, roleRemoveIds }
+  sessions: [],   // { id, guildId, userId, clockTypes: [string], clockIn, clockOut }
+  globalBans: []  // { userId, reason, bannedBy, createdAt }
+};
+
 function load() {
-  if (!fs.existsSync(DATA_FILE)) {
-    return {
-      applications: [],
-      tickets: [],
-      sessions: [],
-      reports: [],
-      requests: [],
-      stickyPanels: []
-    };
-  }
   try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    return {
-      applications: parsed.applications || [],
-      tickets: parsed.tickets || [],
-      sessions: parsed.sessions || [],
-      reports: parsed.reports || [],
-      requests: parsed.requests || [],
-      stickyPanels: parsed.stickyPanels || []
-    };
-  } catch (e) {
-    console.error('[Storage] Failed to load data.json:', e);
-    return {
-      applications: [],
-      tickets: [],
-      sessions: [],
-      reports: [],
-      requests: [],
-      stickyPanels: []
-    };
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf8');
+      data = JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error('[Storage] Error loading data.json:', err);
   }
 }
 
-function save(data) {
+function save() {
   try {
     fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (e) {
-    console.error('[Storage] Failed to save data.json:', e);
+  } catch (err) {
+    console.error('[Storage] Error saving data.json:', err);
   }
 }
 
-// ----------------- Applications -----------------
-function addApplication(app) {
-  const data = load();
-  data.applications.push(app);
-  save(data);
-  return app;
+// --- Guild config helpers ---
+
+function getGuildConfig(guildId) {
+  if (!data.guilds[guildId]) {
+    data.guilds[guildId] = {
+      name: null,
+
+      adminRoleIds: [],
+
+      // Clock system
+      clockTypes: [
+        // { key: 'patrol', label: 'Patrol', addRoleIds: [], removeRoleIdsOnOut: [] }
+      ],
+      onDutyRoleId: null,
+      clockStatusChannelId: null,
+
+      // Tickets
+      ticketTypes: [
+        // { key: 'general', label: 'General Support', template: '...', pingRoleIds: [] }
+      ],
+      ticketPanelChannelId: null,
+      ticketPanelMessageId: null,
+
+      // Applications
+      applicationTypes: [
+        // { key: 'patrol', label: 'Patrol Application', questions: ['q1','q2'], addRoleIds: [], removeRoleIds: [], pingRoleIds: [] }
+      ],
+      applicationPanelChannelId: null,
+      applicationPanelMessageId: null
+    };
+  }
+  return data.guilds[guildId];
 }
 
-function getLatestApplicationForUser(userId) {
-  const data = load();
-  const apps = data.applications.filter(a => a.userId === userId);
-  if (apps.length === 0) return null;
-  return apps.sort((a, b) => b.createdAt - a.createdAt)[0];
+function updateGuildConfig(guildId, patch) {
+  const cfg = getGuildConfig(guildId);
+  Object.assign(cfg, patch);
+  save();
+  return cfg;
 }
 
-function updateApplicationStatus(id, status, decidedBy, reasonOrDivision) {
-  const data = load();
-  const idx = data.applications.findIndex(a => a.id === id);
-  if (idx === -1) return null;
-  const app = data.applications[idx];
-  app.status = status;
-  app.decidedAt = Date.now();
-  app.decidedBy = decidedBy;
-  app.decisionReason = reasonOrDivision;
-  data.applications[idx] = app;
-  save(data);
-  return app;
-}
+// --- Tickets ---
 
-function getApplications() {
-  const data = load();
-  return data.applications;
-}
-
-function getApplicationById(id) {
-  const data = load();
-  return data.applications.find(a => a.id === id) || null;
-}
-
-// ----------------- Tickets -----------------
-function addTicket(ticket) {
-  const data = load();
-  data.tickets.push({ ...ticket, id: ticket.id || `ticket_${Date.now()}`, done: false });
-  save(data);
+function createTicket(ticketData) {
+  const ticket = {
+    id: `t_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
+    status: 'open',
+    createdAt: Date.now(),
+    closedAt: null,
+    ...ticketData
+  };
+  data.tickets.push(ticket);
+  save();
   return ticket;
 }
 
-function closeTicket(channelId) {
-  const data = load();
-  const idx = data.tickets.findIndex(t => t.channelId === channelId && !t.closedAt);
-  if (idx === -1) return null;
-  data.tickets[idx].closedAt = Date.now();
-  save(data);
-  return data.tickets[idx];
+function getTicketByChannel(guildId, channelId) {
+  return data.tickets.find(t => t.guildId === guildId && t.channelId === channelId);
 }
 
-function getTickets() {
-  const data = load();
-  return data.tickets;
+function closeTicket(ticketId) {
+  const t = data.tickets.find(x => x.id === ticketId);
+  if (!t) return null;
+  t.status = 'closed';
+  t.closedAt = Date.now();
+  save();
+  return t;
 }
 
-function getTicketById(id) {
-  const data = load();
-  return data.tickets.find(t => t.id === id) || null;
+function listTickets(guildId, filter = {}) {
+  return data.tickets.filter(t => t.guildId === guildId).filter(t => {
+    if (filter.status && t.status !== filter.status) return false;
+    if (filter.type && t.type !== filter.type) return false;
+    return true;
+  });
 }
 
-function setTicketDone(id, done) {
-  const data = load();
-  const idx = data.tickets.findIndex(t => t.id === id);
-  if (idx === -1) return null;
-  data.tickets[idx].done = !!done;
-  save(data);
-  return data.tickets[idx];
+// --- Applications ---
+
+function createApplication(appData) {
+  const app = {
+    id: `a_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
+    status: 'pending',
+    createdAt: Date.now(),
+    decidedAt: null,
+    decidedBy: null,
+    ...appData
+  };
+  data.applications.push(app);
+  save();
+  return app;
 }
 
-// ----------------- Sessions (clock / activity) -----------------
-function getAllOpenSessions() {
-  const data = load();
-  return data.sessions.filter(s => !s.clockOut);
+function getApplicationById(id) {
+  return data.applications.find(a => a.id === id);
 }
 
-function getOpenSession(userId) {
-  const data = load();
-  return data.sessions.find(s => s.userId === userId && !s.clockOut) || null;
+function listApplications(guildId, filter = {}) {
+  return data.applications.filter(a => a.guildId === guildId).filter(a => {
+    if (filter.status && a.status !== filter.status) return false;
+    if (filter.type && a.type !== filter.type) return false;
+    return true;
+  });
 }
 
-function clockIn(userId, assignmentOrAssignments) {
-  const data = load();
-  const already = data.sessions.find(s => s.userId === userId && !s.clockOut);
-  if (already) return null;
+function decideApplication(id, status, decidedBy) {
+  const app = getApplicationById(id);
+  if (!app) return null;
+  app.status = status;
+  app.decidedAt = Date.now();
+  app.decidedBy = decidedBy;
+  save();
+  return app;
+}
+
+// --- Duty sessions ---
+
+function clockIn(guildId, userId, clockTypeKeys) {
+  // Close any existing open session
+  data.sessions.forEach(s => {
+    if (s.guildId === guildId && s.userId === userId && !s.clockOut) {
+      s.clockOut = Date.now();
+    }
+  });
+
   const session = {
-    id: `sess_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    id: `s_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
+    guildId,
     userId,
+    clockTypes: clockTypeKeys,
     clockIn: Date.now(),
-    clockOut: null,
-    assignments: Array.isArray(assignmentOrAssignments)
-      ? assignmentOrAssignments
-      : assignmentOrAssignments
-      ? [assignmentOrAssignments]
-      : []
+    clockOut: null
   };
   data.sessions.push(session);
-  save(data);
+  save();
   return session;
 }
 
-function clockOut(userId) {
-  const data = load();
-  const idx = data.sessions.findIndex(s => s.userId === userId && !s.clockOut);
-  if (idx === -1) return null;
-  data.sessions[idx].clockOut = Date.now();
-  save(data);
-  return data.sessions[idx];
+function clockOut(guildId, userId) {
+  const open = data.sessions.find(
+    s => s.guildId === guildId && s.userId === userId && !s.clockOut
+  );
+  if (!open) return null;
+  open.clockOut = Date.now();
+  save();
+  return open;
 }
 
-function getSessionsForUserInRange(userId, fromTs) {
-  const data = load();
+function getOpenSessions(guildId) {
+  return data.sessions.filter(s => s.guildId === guildId && !s.clockOut);
+}
+
+function getUserSessionsInRange(guildId, userId, fromTs) {
   return data.sessions.filter(
     s =>
+      s.guildId === guildId &&
       s.userId === userId &&
       s.clockOut &&
       s.clockOut >= fromTs
   );
 }
 
-function getSessionsInRange(fromTs, assignmentFilter = null) {
-  const data = load();
+function getSessionsInRange(guildId, fromTs, clockTypeKey = null) {
   return data.sessions.filter(s => {
+    if (s.guildId !== guildId) return false;
     if (!s.clockOut || s.clockOut < fromTs) return false;
-    if (!assignmentFilter) return true;
-    const arr = Array.isArray(s.assignments) ? s.assignments : [];
-    return arr.includes(assignmentFilter);
+    if (clockTypeKey && !s.clockTypes.includes(clockTypeKey)) return false;
+    return true;
   });
 }
 
-// ----------------- Reports -----------------
-function addReport(report) {
-  const data = load();
-  const r = {
-    ...report,
-    id: report.id || `report_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-    done: false
-  };
-  data.reports.push(r);
-  save(data);
-  return r;
+// --- Global bans ---
+
+function addGlobalBan(userId, reason, bannedBy) {
+  if (data.globalBans.find(b => b.userId === userId)) return;
+  data.globalBans.push({
+    userId,
+    reason: reason || 'No reason provided',
+    bannedBy,
+    createdAt: Date.now()
+  });
+  save();
 }
 
-function getReports() {
-  const data = load();
-  return data.reports;
+function removeGlobalBan(userId) {
+  data.globalBans = data.globalBans.filter(b => b.userId !== userId);
+  save();
 }
 
-function getReportById(id) {
-  const data = load();
-  return data.reports.find(r => r.id === id) || null;
+function isGloballyBanned(userId) {
+  return !!data.globalBans.find(b => b.userId === userId);
 }
 
-function setReportDone(id, done) {
-  const data = load();
-  const idx = data.reports.findIndex(r => r.id === id);
-  if (idx === -1) return null;
-  data.reports[idx].done = !!done;
-  save(data);
-  return data.reports[idx];
+function listGlobalBans() {
+  return data.globalBans;
 }
 
-// ----------------- Requests (roster, role) -----------------
-function addRequest(request) {
-  const data = load();
-  const r = {
-    ...request,
-    id: request.id || `request_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-    done: false
-  };
-  data.requests.push(r);
-  save(data);
-  return r;
-}
-
-function getRequests() {
-  const data = load();
-  return data.requests;
-}
-
-function getRequestById(id) {
-  const data = load();
-  return data.requests.find(r => r.id === id) || null;
-}
-
-function setRequestDone(id, done) {
-  const data = load();
-  const idx = data.requests.findIndex(r => r.id === id);
-  if (idx === -1) return null;
-  data.requests[idx].done = !!done;
-  save(data);
-  return data.requests[idx];
-}
-
-// ----------------- Sticky panels -----------------
-function setStickyPanel(channelId, panelType) {
-  const data = load();
-  const existingIdx = data.stickyPanels.findIndex(sp => sp.channelId === channelId);
-  const record = {
-    channelId,
-    panelType,
-    updatedAt: Date.now()
-  };
-  if (existingIdx === -1) {
-    data.stickyPanels.push(record);
-  } else {
-    data.stickyPanels[existingIdx] = { ...data.stickyPanels[existingIdx], ...record };
-  }
-  save(data);
-  return record;
-}
-
-function getStickyPanels() {
-  const data = load();
-  return data.stickyPanels;
-}
-
-function getStickyPanelForChannel(channelId) {
-  const data = load();
-  return data.stickyPanels.find(sp => sp.channelId === channelId) || null;
-}
+// --- Init ---
+load();
 
 module.exports = {
-  // applications
-  addApplication,
-  updateApplicationStatus,
-  getLatestApplicationForUser,
-  getApplications,
-  getApplicationById,
-
-  // tickets
-  addTicket,
+  getGuildConfig,
+  updateGuildConfig,
+  createTicket,
+  getTicketByChannel,
   closeTicket,
-  getTickets,
-  getTicketById,
-  setTicketDone,
-
-  // sessions
-  getAllOpenSessions,
-  getOpenSession,
+  listTickets,
+  createApplication,
+  getApplicationById,
+  listApplications,
+  decideApplication,
   clockIn,
   clockOut,
-  getSessionsForUserInRange,
+  getOpenSessions,
+  getUserSessionsInRange,
   getSessionsInRange,
-
-  // reports
-  addReport,
-  getReports,
-  getReportById,
-  setReportDone,
-
-  // requests
-  addRequest,
-  getRequests,
-  getRequestById,
-  setRequestDone,
-
-  // sticky
-  setStickyPanel,
-  getStickyPanels,
-  getStickyPanelForChannel
+  addGlobalBan,
+  removeGlobalBan,
+  isGloballyBanned,
+  listGlobalBans
 };
