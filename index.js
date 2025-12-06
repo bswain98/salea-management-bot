@@ -754,37 +754,28 @@ app.get('/', (req, res) => {
   return res.redirect('/auth/discord');
 });
 
-// List guilds where the bot is present
-app.get('/admin', ensureAuth, async (req, res) => {
-  const guildEntries = [];
+// Admin panel (protected by Discord OAuth)
+app.get('/admin', ensureAuthenticated, async (req, res) => {
+  try {
+    // Build a simple list of guilds the bot is in
+    const guilds = Array.from(client.guilds.cache.values()).map(g => ({
+      id: g.id,
+      name: g.name,
+    }));
 
-  for (const [id, guild] of client.guilds.cache) {
-    let isAdmin = false;
-    try {
-      const member = await guild.members.fetch(req.user.id);
-      const cfg = getGuildConfig(id);
-      const hasAdminRole = (cfg.adminRoleIds || []).some(rid => member.roles.cache.has(rid));
-      const hasManageGuild = member.permissions.has(PermissionFlagsBits.ManageGuild);
-      if (hasAdminRole || hasManageGuild) isAdmin = true;
-    } catch {
-      isAdmin = false;
-    }
+    const guildCount = guilds.length;
 
-    guildEntries.push({
-      id,
-      name: guild.name,
-      isAdmin
+    return res.render('admin/home', {
+      user: req.user || null,
+      guildCount,
+      guilds,
     });
+  } catch (err) {
+    console.error('❌ Error in /admin route:', err);
+    return res.status(500).send('Admin error – check server logs.');
   }
-
-  res.render('admin/home', {
-    title: 'Guilds',
-    user: req.user,
-    guilds: guildEntries,
-    activeGuild: null,
-    activeTab: null
-  });
 });
+
 
 // Guild dashboard
 app.get('/admin/guild/:guildId', ensureAuth, ensureGuildAdmin, (req, res) => {
@@ -1029,3 +1020,4 @@ app.listen(PORT, () => {
 });
 
 client.login(DISCORD_TOKEN);
+
