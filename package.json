@@ -1,20 +1,25 @@
 {
   "name": "salea-management-bot",
   "version": "2.0.0",
+  "description": "Multi-guild Discord management bot with admin dashboard (clock-in, tickets, applications, moderation, etc.)",
   "main": "index.js",
-  "license": "MIT",
   "scripts": {
     "start": "node index.js"
   },
- "dependencies": {
-  "body-parser": "^1.20.3",
-  "discord.js": "^14.16.3",
-  "dotenv": "^16.4.5",
-  "express": "^4.21.1",
-  "express-session": "^1.17.3",
-  "jsonwebtoken": "^9.0.2",
-  "passport": "^0.7.0",
-  "passport-discord": "^0.1.4",
-  "uuid": "^9.0.1",
-  "ejs": "^3.1.10"
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-session": "^1.17.3",
+    "jsonwebtoken": "^9.0.2",
+    "passport": "^0.7.0",
+    "passport-discord": "^0.1.4",
+    "uuid": "^9.0.1",
+    "ejs": "^3.1.10"
+  },
+  "license": "MIT"
 }
