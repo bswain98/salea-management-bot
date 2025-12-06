@@ -57,7 +57,7 @@ function setGuildAdminRoles(guildId, roleIds = [], guildName = null) {
   return state.guilds[guildId];
 }
 
-// Return the whole thing (for admin UI)
+// Return the whole thing (if needed later)
 function getAllGuildConfigs() {
   return state.guilds;
 }
