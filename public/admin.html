@@ -2,509 +2,602 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>SALEA Admin Panel</title>
+  <title>SALEA Management Panel</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
-      --bg: #050710;
-      --bg-card: #111827;
-      --accent: #3b82f6;
-      --accent-soft: rgba(59, 130, 246, 0.2);
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --danger: #ef4444;
-      --success: #10b981;
-      --border: #1f2937;
-    }
-    * {
-      box-sizing: border-box;
+      color-scheme: dark;
     }
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top, #111827, #020617);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      align-items: stretch;
-      justify-content: center;
-    }
-    .shell {
-      max-width: 1100px;
-      width: 100%;
-      margin: 24px;
-      background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent),
-                  radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.08), transparent);
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.3);
-      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-    header {
-      padding: 16px 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid var(--border);
-      backdrop-filter: blur(14px);
-      background: linear-gradient(to right, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.7));
-    }
-    header h1 {
-      margin: 0;
-      font-size: 1.1rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #f9fafb;
-    }
-    header span.tagline {
-      font-size: 0.85rem;
-      color: var(--muted);
-    }
-    header .user {
-      font-size: 0.85rem;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .pill {
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.7);
-      font-size: 0.7rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      background: #0b0c10;
       color: #e5e7eb;
-    }
-    .pill.online {
-      border-color: rgba(16, 185, 129, 0.9);
-      color: var(--success);
-    }
-    button.btn {
-      border-radius: 999px;
-      border: none;
-      padding: 7px 14px;
-      font-size: 0.8rem;
-      background: var(--accent);
-      color: white;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    button.btn.outline {
-      background: transparent;
-      border: 1px solid rgba(148, 163, 184, 0.7);
-      color: var(--muted);
-    }
-    button.btn:hover {
-      filter: brightness(1.05);
-    }
-    main {
-      padding: 18px 22px 22px;
       display: flex;
-      gap: 16px;
-      flex: 1;
+      min-height: 100vh;
     }
     .sidebar {
-      width: 210px;
-      border-right: 1px solid var(--border);
-      padding-right: 12px;
+      width: 260px;
+      background: #111827;
+      border-right: 1px solid #1f2933;
+      padding: 16px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
     }
-    .sidebar h2 {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: var(--muted);
-      margin: 0 0 10px;
+    .sidebar h1 {
+      font-size: 18px;
+      margin: 0;
     }
-    .nav {
+    .sidebar small {
+      color: #9ca3af;
+    }
+    .sidebar button,
+    .sidebar a.btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .sidebar button:hover,
+    .sidebar a.btn:hover {
+      background: #1d4ed8;
+    }
+    .user-card {
+      padding: 10px 12px;
+      background: #020617;
+      border-radius: 8px;
+      border: 1px solid #1f2933;
+      font-size: 13px;
       display: flex;
       flex-direction: column;
       gap: 4px;
     }
-    .nav button {
-      width: 100%;
-      text-align: left;
-      border-radius: 999px;
-      padding: 7px 11px;
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.85rem;
-      cursor: pointer;
-    }
-    .nav button.active {
-      background: var(--accent-soft);
-      color: #e5e7eb;
-    }
-    .nav button span.dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: rgba(148, 163, 184, 0.6);
-    }
-    .nav button.active span.dot {
-      background: var(--accent);
-    }
-    .view {
-      flex: 1;
-      display: none;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .view.active {
-      display: flex;
-    }
-    .card {
-      background: rgba(15, 23, 42, 0.94);
-      border-radius: 14px;
-      border: 1px solid rgba(31, 41, 55, 0.9);
-      padding: 12px 14px;
-    }
-    .card h3 {
-      margin: 0 0 6px;
-      font-size: 0.9rem;
-    }
-    .card p {
-      margin: 0;
-      font-size: 0.8rem;
-      color: var(--muted);
-    }
-    .card-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-      gap: 12px;
-    }
-    .muted {
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
-    .badge {
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.6);
-      padding: 2px 8px;
-      font-size: 0.7rem;
+    .user-card span.label {
+      color: #9ca3af;
+      font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
-    .badge.accent {
-      border-color: rgba(59, 130, 246, 0.9);
-      color: var(--accent);
+    .main {
+      flex: 1;
+      padding: 20px 24px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
     }
-    .badge.success {
-      border-color: rgba(16, 185, 129, 0.9);
-      color: var(--success);
-    }
-    .section-header {
+    .top-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 4px;
+      gap: 12px;
+      flex-wrap: wrap;
     }
-    .section-header h3 {
-      margin: 0;
-      font-size: 0.85rem;
+    .guild-select {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 260px;
     }
-    .pill-sm {
-      font-size: 0.7rem;
-      color: var(--muted);
+    .guild-select label {
+      font-size: 12px;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
     }
-    .login-card {
-      padding: 30px 18px;
-      text-align: center;
+    select {
+      background: #020617;
+      border: 1px solid #1f2933;
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+      min-height: 32px;
     }
-    .login-card h2 {
-      margin: 0 0 6px;
-      font-size: 1rem;
+    select:focus {
+      outline: 1px solid #2563eb;
+      outline-offset: 1px;
     }
-    .login-card p {
-      margin: 0 0 16px;
-      font-size: 0.85rem;
-      color: var(--muted);
+    .card {
+      background: #020617;
+      border-radius: 10px;
+      border: 1px solid #1f2933;
+      padding: 16px 18px;
+      box-sizing: border-box;
     }
-
-    @media (max-width: 800px) {
-      main {
+    .card h2 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card h2 span.badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #111827;
+      border: 1px solid #1f2933;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+    }
+    .card p.sub {
+      margin: 0 0 10px 0;
+      font-size: 13px;
+      color: #9ca3af;
+    }
+    .role-list {
+      max-height: 260px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid #111827;
+      background: #020617;
+      padding: 4px;
+      box-sizing: border-box;
+    }
+    .role-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 6px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .role-item:hover {
+      background: #111827;
+    }
+    .role-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .role-pill {
+      padding: 1px 6px;
+      font-size: 11px;
+      border-radius: 999px;
+      background: #111827;
+      border: 1px solid #1f2933;
+      color: #9ca3af;
+    }
+    .role-item input[type="checkbox"] {
+      accent-color: #2563eb;
+    }
+    .card-footer {
+      margin-top: 10px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .btn-secondary {
+      background: #111827;
+      color: #e5e7eb;
+      border: 1px solid #1f2933;
+    }
+    .btn-secondary:hover {
+      background: #020617;
+    }
+    .status {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 6px;
+    }
+    .status.ok {
+      color: #22c55e;
+    }
+    .status.error {
+      color: #f97373;
+    }
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .pill {
+      padding: 2px 8px;
+      font-size: 11px;
+      border-radius: 999px;
+      background: #111827;
+      border: 1px solid #1f2933;
+      color: #9ca3af;
+    }
+    .section-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      body {
         flex-direction: column;
       }
       .sidebar {
         width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 10px;
-        margin-bottom: 10px;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .main {
+        padding: 14px 14px 22px;
+      }
+      .section-grid {
+        grid-template-columns: minmax(0, 1fr);
       }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <header>
+  <div class="sidebar">
+    <div>
+      <h1>SALEA Admin</h1>
+      <small id="brandGuild">Multi-Guild Control</small>
+    </div>
+    <div class="user-card" id="userCard" style="display: none;">
+      <span class="label">Logged in as</span>
+      <div id="userMain"></div>
+      <div id="userTag" style="font-size: 12px; color:#9ca3af;"></div>
+      <div id="userGuildSummary" style="font-size: 12px; margin-top:4px;"></div>
+    </div>
+    <div id="loginBlock">
+      <a href="/auth/discord" class="btn">Login with Discord</a>
+    </div>
+    <button id="logoutBtn" style="display:none;" onclick="handleLogout()">Log out</button>
+  </div>
+
+  <div class="main">
+    <div class="top-row">
+      <div class="guild-select">
+        <label for="guildSelect">Active Guild</label>
+        <select id="guildSelect" disabled>
+          <option>Loading…</option>
+        </select>
+        <div class="status" id="guildStatus"></div>
+      </div>
       <div>
-        <h1>San Andreas Law Enforcement Agency</h1>
-        <span class="tagline">Unified Administration · Duty · Tickets · Applications</span>
+        <div style="font-size:12px;color:#9ca3af;">Tip</div>
+        <div style="font-size:13px;color:#e5e7eb;">
+          Only guilds where you have <strong>--High Command--</strong> or a configured admin role will appear.
+        </div>
       </div>
-      <div class="user">
-        <span id="admin-status" class="pill">Checking session…</span>
-        <button id="logoutBtn" class="btn outline" style="display:none;" onclick="window.location.href='/logout'">
-          Log out
-        </button>
+    </div>
+
+    <div class="section-grid">
+      <!-- Admin Role Management -->
+      <div class="card">
+        <h2>
+          Admin Roles
+          <span class="badge">PER-GUILD</span>
+        </h2>
+        <p class="sub">
+          Select which Discord roles count as <strong>panel admins</strong> for the active guild.
+          Anyone with these roles (or <code>--High Command--</code>) can access the admin dashboard.
+        </p>
+
+        <div id="rolesContainer">
+          <div class="status">Select a guild to view roles.</div>
+        </div>
+
+        <div class="card-footer">
+          <button class="btn-secondary" type="button" onclick="reloadGuilds()">Refresh Roles</button>
+          <button type="button" onclick="saveAdminRoles()">Save Admin Roles</button>
+        </div>
+        <div class="status" id="rolesStatus"></div>
       </div>
-    </header>
 
-    <main>
-      <aside class="sidebar">
-        <h2>Control Center</h2>
-        <div class="nav">
-          <button class="active" data-view="overview">
-            <span class="dot"></span> Overview
-          </button>
-          <button data-view="applications">
-            <span class="dot"></span> Applications
-          </button>
-          <button data-view="tickets">
-            <span class="dot"></span> Tickets
-          </button>
-          <button data-view="reports">
-            <span class="dot"></span> Reports & Requests
-          </button>
-          <button data-view="duty">
-            <span class="dot"></span> Duty & Activity
-          </button>
+      <!-- Current Admin Rights Summary -->
+      <div class="card">
+        <h2>
+          Admin Overview
+          <span class="badge">YOU</span>
+        </h2>
+        <p class="sub">
+          This shows which guilds you can manage in this session and a quick summary of the active guild’s admin roles.
+        </p>
+        <div>
+          <div style="font-size:12px;color:#9ca3af;">You are an admin in:</div>
+          <div id="adminGuildList" class="pill-row"></div>
         </div>
-      </aside>
-
-      <section style="flex:1; display:flex; flex-direction:column; gap:12px;">
-        <!-- Login required view -->
-        <div id="loginView" class="view active">
-          <div class="card login-card">
-            <h2>Admin login required</h2>
-            <p>
-              This panel is restricted to SALEA High Command / Admin roles.<br />
-              Log in with your Discord account that has the appropriate role in the SALEA server.
-            </p>
-            <button class="btn" onclick="window.location.href='/auth/discord'">
-              Log in with Discord
-            </button>
-          </div>
+        <div style="margin-top:10px;">
+          <div style="font-size:12px;color:#9ca3af;">Active guild admin roles:</div>
+          <div id="activeAdminRoles" class="pill-row"></div>
         </div>
-
-        <!-- Authenticated views -->
-        <div id="overview" class="view">
-          <div class="card-grid">
-            <div class="card">
-              <div class="section-header">
-                <h3>Server Status</h3>
-                <span class="badge success">ONLINE</span>
-              </div>
-              <p class="muted">
-                Bot is connected and responding to slash commands in the department Discord.
-              </p>
-            </div>
-
-            <div class="card">
-              <div class="section-header">
-                <h3>Applications</h3>
-                <span class="pill-sm">Panel-based · Modal forms</span>
-              </div>
-              <p class="muted">
-                New applications are submitted from in-Discord panels and logged in your configured
-                applications channel. Use <code>/app approve</code> or <code>/app deny</code> or manage
-                them here once backend is wired.
-              </p>
-            </div>
-
-            <div class="card">
-              <div class="section-header">
-                <h3>Tickets</h3>
-                <span class="badge accent">/ticket</span>
-              </div>
-              <p class="muted">
-                Members open tickets via <code>/ticket open</code> for General, IA, Training, and Tech issues.
-                Transcripts are archived automatically when staff close the channel.
-              </p>
-            </div>
-
-            <div class="card">
-              <div class="section-header">
-                <h3>Duty & Activity</h3>
-                <span class="pill-sm">/clock & /activity</span>
-              </div>
-              <p class="muted">
-                Clock-ins track assignments (Patrol, CID, Reaper, etc.) and feed the on-duty board and
-                activity commands. High Command can see top performers and member-by-member breakdowns.
-              </p>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="section-header">
-              <h3>Coming Next</h3>
-              <span class="pill-sm">Admin actions from web</span>
-            </div>
-            <p class="muted">
-              This panel is wired for Discord-authenticated admin access. As we expand, we’ll plug in:
-              Approve / deny applications, view ticket lists, mark reports and requests as handled,
-              and adjust panel destinations using the dashboard rather than editing config.
-            </p>
-          </div>
-        </div>
-
-        <div id="applications" class="view">
-          <div class="card">
-            <div class="section-header">
-              <h3>Applications</h3>
-              <span class="pill-sm">Discord-based intake</span>
-            </div>
-            <p class="muted">
-              Applicants use the in-Discord application panel (buttons + modal forms). Submissions are logged
-              into your configured applications channel and stored by the bot.<br /><br />
-              Right now, review & decisions are handled via slash commands:
-            </p>
-            <ul class="muted">
-              <li><code>/app approve &lt;user&gt; division: Patrol / CID / SRT / etc.</code></li>
-              <li><code>/app deny &lt;user&gt; reason: &lt;text&gt;</code></li>
-            </ul>
-            <p class="muted">
-              We can extend this panel later to show a live list of pending applications and add
-              Approve / Deny buttons that call the same bot logic.
-            </p>
-          </div>
-        </div>
-
-        <div id="tickets" class="view">
-          <div class="card">
-            <div class="section-header">
-              <h3>Tickets</h3>
-              <span class="pill-sm">Support · IA · Training · Tech</span>
-            </div>
-            <p class="muted">
-              The ticket system is fully Discord-native:
-            </p>
-            <ul class="muted">
-              <li><code>/ticket open type: general / ia / training / tech</code></li>
-              <li>Bot creates a private channel under the matching category.</li>
-              <li>Staff close with <code>/ticket close</code>, and the bot posts a text transcript to the log channel.</li>
-            </ul>
-            <p class="muted">
-              This view will later show a searchable archive of tickets and per-user histories once we wire it
-              into the storage layer.
-            </p>
-          </div>
-        </div>
-
-        <div id="reports" class="view">
-          <div class="card">
-            <div class="section-header">
-              <h3>Reports & Requests</h3>
-              <span class="pill-sm">Roadmap</span>
-            </div>
-            <p class="muted">
-              Report forms (citations, arrests, UOF, AAR, CID logs, TU shift summaries) and roster/role
-              requests will live here as we connect the UI to the bot’s storage. The idea:
-            </p>
-            <ul class="muted">
-              <li>Discord-side buttons to submit reports & requests.</li>
-              <li>Entries appear here in an admin queue.</li>
-              <li>Each item gets a detail view and a “mark done” toggle.</li>
-            </ul>
-          </div>
-        </div>
-
-        <div id="duty" class="view">
-          <div class="card">
-            <div class="section-header">
-              <h3>Duty & Activity</h3>
-              <span class="pill-sm">On-duty board + stats</span>
-            </div>
-            <p class="muted">
-              Duty tracking is currently driven by Discord commands and the on-duty board message:
-            </p>
-            <ul class="muted">
-              <li><code>/clock in assignment: Patrol / CID / Reaper / etc.</code></li>
-              <li><code>/clock out</code></li>
-              <li><code>/clock status</code> – see your own current session.</li>
-              <li><code>/activity self</code> – see your totals.</li>
-              <li><code>/activity member</code> / <code>/activity top</code> – High Command views.</li>
-            </ul>
-            <p class="muted">
-              The dashboard can later be extended with live tables showing who’s on duty and time
-              worked per assignment.
-            </p>
-          </div>
-        </div>
-      </section>
-    </main>
+      </div>
+    </div>
   </div>
 
   <script>
-    const views = document.querySelectorAll('.view');
-    const navButtons = document.querySelectorAll('.nav button');
+    let me = null;
+    let guilds = [];
+    let loading = false;
 
-    function showView(id) {
-      views.forEach(v => v.classList.remove('active'));
-      navButtons.forEach(b => b.classList.remove('active'));
-
-      const target = document.getElementById(id);
-      if (target) target.classList.add('active');
-
-      const btn = Array.from(navButtons).find(b => b.dataset.view === id);
-      if (btn) btn.classList.add('active');
-    }
-
-    navButtons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const viewId = btn.dataset.view;
-        showView(viewId);
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        ...options,
+        body: options.body ? JSON.stringify(options.body) : undefined
       });
-    });
 
-    async function initAdminPanel() {
-      const statusEl = document.getElementById('admin-status');
-      const loginView = document.getElementById('loginView');
-      const logoutBtn = document.getElementById('logoutBtn');
-
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || res.statusText || 'Request failed');
+      }
       try {
-        const res = await fetch('/api/me', { credentials: 'include' });
-        if (!res.ok) {
-          statusEl.textContent = 'Not authenticated';
-          statusEl.classList.remove('online');
-          loginView.style.display = 'flex';
-          showView('loginView');
-          return;
-        }
-
-        const data = await res.json();
-        if (!data.authenticated) {
-          statusEl.textContent = 'Not authenticated';
-          loginView.style.display = 'flex';
-          showView('loginView');
-          return;
-        }
-
-        statusEl.textContent = `Admin: ${data.user.username}#${data.user.discriminator}`;
-        statusEl.classList.add('online');
-        statusEl.classList.add('pill', 'online');
-        logoutBtn.style.display = 'inline-flex';
-
-        // Hide login view and show overview
-        loginView.style.display = 'none';
-        showView('overview');
-      } catch (err) {
-        console.error('Error checking admin session:', err);
-        statusEl.textContent = 'Error loading session';
-        loginView.style.display = 'flex';
-        showView('loginView');
+        return await res.json();
+      } catch {
+        return null;
       }
     }
 
-    document.addEventListener('DOMContentLoaded', initAdminPanel);
+    function setStatus(id, msg, type = '') {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = msg || '';
+      el.classList.remove('ok', 'error');
+      if (type) el.classList.add(type);
+    }
+
+    async function loadMe() {
+      try {
+        const data = await api('/api/me');
+        me = data;
+        document.getElementById('loginBlock').style.display = 'none';
+        document.getElementById('logoutBtn').style.display = 'inline-flex';
+        document.getElementById('userCard').style.display = 'flex';
+
+        document.getElementById('userMain').textContent = data.user.username;
+        document.getElementById('userTag').textContent = data.user.id;
+
+        const count = (data.adminGuilds || []).length;
+        document.getElementById('userGuildSummary').textContent =
+          count === 1
+            ? 'Admin in 1 guild'
+            : `Admin in ${count} guilds`;
+
+        await loadGuilds();
+      } catch (err) {
+        // Not authenticated
+        document.getElementById('loginBlock').style.display = 'block';
+        document.getElementById('logoutBtn').style.display = 'none';
+        document.getElementById('userCard').style.display = 'none';
+        const sel = document.getElementById('guildSelect');
+        sel.disabled = true;
+        sel.innerHTML = '<option>Login to manage guilds</option>';
+      }
+    }
+
+    async function loadGuilds() {
+      loading = true;
+      setStatus('guildStatus', 'Loading guilds…');
+      setStatus('rolesStatus', '');
+      try {
+        const data = await api('/api/guilds');
+        guilds = data || [];
+
+        const sel = document.getElementById('guildSelect');
+        sel.innerHTML = '';
+        if (!guilds.length) {
+          sel.disabled = true;
+          sel.innerHTML = '<option>No admin guilds found</option>';
+          setStatus('guildStatus', 'You do not appear as admin in any guild.', 'error');
+          document.getElementById('rolesContainer').innerHTML =
+            '<div class="status error">No roles to show (no admin guilds).</div>';
+          document.getElementById('adminGuildList').innerHTML = '';
+          document.getElementById('activeAdminRoles').innerHTML = '';
+          return;
+        }
+
+        const activeId = me?.activeGuildId;
+        guilds.forEach(g => {
+          const opt = document.createElement('option');
+          opt.value = g.id;
+          opt.textContent = g.name + (g.isAdminGuild ? '' : ' (no panel access)');
+          if (activeId && g.id === activeId) {
+            opt.selected = true;
+          }
+          sel.appendChild(opt);
+        });
+
+        sel.disabled = false;
+        sel.addEventListener('change', onGuildChange);
+
+        updateGuildSummaryUI();
+        await renderRolesForActiveGuild();
+
+        setStatus('guildStatus', 'Guilds loaded.', 'ok');
+      } catch (err) {
+        console.error('loadGuilds error:', err);
+        setStatus('guildStatus', 'Failed to load guilds.', 'error');
+      } finally {
+        loading = false;
+      }
+    }
+
+    function updateGuildSummaryUI() {
+      const listEl = document.getElementById('adminGuildList');
+      listEl.innerHTML = '';
+      const adminGuilds = me?.adminGuilds || [];
+      adminGuilds.forEach(g => {
+        const span = document.createElement('div');
+        span.className = 'pill';
+        span.textContent = g.name;
+        listEl.appendChild(span);
+      });
+
+      renderActiveGuildAdminPills();
+    }
+
+    function renderActiveGuildAdminPills() {
+      const activeId = document.getElementById('guildSelect').value;
+      const guild = guilds.find(g => g.id === activeId);
+      const container = document.getElementById('activeAdminRoles');
+      container.innerHTML = '';
+
+      if (!guild) return;
+
+      const adminIds = new Set(guild.adminRoleIds || []);
+      if (!guild.roles || !guild.roles.length) {
+        container.innerHTML =
+          '<div class="status">No roles cached yet for this guild.</div>';
+        return;
+      }
+
+      adminIds.forEach(id => {
+        const role = guild.roles.find(r => r.id === id);
+        if (!role) return;
+        const pill = document.createElement('div');
+        pill.className = 'pill';
+        pill.textContent = role.name;
+        container.appendChild(pill);
+      });
+
+      if (!adminIds.size) {
+        container.innerHTML =
+          '<div class="status">No custom admin roles for this guild (only <code>--High Command--</code> can access).</div>';
+      }
+    }
+
+    async function renderRolesForActiveGuild() {
+      const activeId = document.getElementById('guildSelect').value;
+      const container = document.getElementById('rolesContainer');
+      container.innerHTML = '';
+
+      const guild = guilds.find(g => g.id === activeId);
+      if (!guild) {
+        container.innerHTML = '<div class="status">Select a guild to view roles.</div>';
+        return;
+      }
+
+      if (!guild.roles || !guild.roles.length) {
+        container.innerHTML =
+          '<div class="status">No roles found for this guild (bot might not see roles yet).</div>';
+        return;
+      }
+
+      const adminIdsSet = new Set(guild.adminRoleIds || []);
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'role-list';
+
+      guild.roles
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach(role => {
+          if (role.name === '@everyone') return;
+
+          const item = document.createElement('div');
+          item.className = 'role-item';
+
+          const left = document.createElement('div');
+          left.className = 'role-name';
+
+          const name = document.createElement('span');
+          name.textContent = role.name;
+
+          const pill = document.createElement('span');
+          pill.className = 'role-pill';
+          pill.textContent = role.id;
+
+          left.appendChild(name);
+          left.appendChild(pill);
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = adminIdsSet.has(role.id);
+          checkbox.dataset.roleId = role.id;
+
+          item.appendChild(left);
+          item.appendChild(checkbox);
+
+          item.addEventListener('click', e => {
+            if (e.target.tagName.toLowerCase() === 'input') return;
+            checkbox.checked = !checkbox.checked;
+          });
+
+          wrapper.appendChild(item);
+        });
+
+      container.appendChild(wrapper);
+      renderActiveGuildAdminPills();
+    }
+
+    async function onGuildChange() {
+      if (loading) return;
+      const guildId = document.getElementById('guildSelect').value;
+      try {
+        await api('/api/select-guild', {
+          method: 'POST',
+          body: { guildId }
+        });
+        if (me) me.activeGuildId = guildId;
+        setStatus('guildStatus', 'Active guild updated.', 'ok');
+        await loadGuilds();
+      } catch (err) {
+        console.error('select-guild error:', err);
+        setStatus('guildStatus', 'Failed to switch guild.', 'error');
+      }
+    }
+
+    async function saveAdminRoles() {
+      const activeId = document.getElementById('guildSelect').value;
+      const guild = guilds.find(g => g.id === activeId);
+      if (!guild) {
+        setStatus('rolesStatus', 'No active guild selected.', 'error');
+        return;
+      }
+
+      const checkboxes = document.querySelectorAll(
+        '#rolesContainer input[type="checkbox"][data-role-id]'
+      );
+      const roleIds = [];
+      checkboxes.forEach(cb => {
+        if (cb.checked) roleIds.push(cb.dataset.roleId);
+      });
+
+      try {
+        setStatus('rolesStatus', 'Saving…');
+        const res = await api(`/api/guilds/${activeId}/admin-roles`, {
+          method: 'POST',
+          body: { roleIds }
+        });
+
+        const idx = guilds.findIndex(g => g.id === activeId);
+        if (idx !== -1) {
+          guilds[idx].adminRoleIds = res.adminRoleIds || [];
+        }
+
+        setStatus('rolesStatus', 'Admin roles saved.', 'ok');
+        renderActiveGuildAdminPills();
+      } catch (err) {
+        console.error('saveAdminRoles error:', err);
+        setStatus('rolesStatus', 'Failed to save admin roles.', 'error');
+      }
+    }
+
+    async function reloadGuilds() {
+      await loadMe();
+    }
+
+    function handleLogout() {
+      window.location.href = '/logout';
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      loadMe();
+    });
   </script>
 </body>
 </html>
