@@ -4,54 +4,34 @@ const path = require('path');
 
 const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Base/default shape for our data store
 const defaultData = {
-  guilds: {},     // guildId -> { config }
-  tickets: [],    // { id, guildId, channelId, userId, type, status, createdAt, closedAt }
-  applications: [], // { id, guildId, userId, type, answers, status, createdAt, decidedAt, decidedBy, roleAddIds, roleRemoveIds }
-  sessions: [],   // { id, guildId, userId, clockTypes: [string], clockIn, clockOut }
-  globalBans: []  // { userId, reason, bannedBy, createdAt }
+  guilds: {},        // guildId -> config
+  tickets: [],       // ticket records
+  applications: [],  // application records
+  sessions: [],      // clock/in duty sessions
 };
 
 let data = JSON.parse(JSON.stringify(defaultData));
 
-/**
- * Ensure data has the correct top-level shape,
- * even if an old/bad data.json was loaded.
- */
 function ensureShape() {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     data = JSON.parse(JSON.stringify(defaultData));
     return;
   }
 
-  // Ensure each key exists with correct type
   if (!data.guilds || typeof data.guilds !== 'object' || Array.isArray(data.guilds)) {
     data.guilds = {};
   }
-
-  if (!Array.isArray(data.tickets)) {
-    data.tickets = [];
-  }
-
-  if (!Array.isArray(data.applications)) {
-    data.applications = [];
-  }
-
-  if (!Array.isArray(data.sessions)) {
-    data.sessions = [];
-  }
-
-  if (!Array.isArray(data.globalBans)) {
-    data.globalBans = [];
-  }
+  if (!Array.isArray(data.tickets)) data.tickets = [];
+  if (!Array.isArray(data.applications)) data.applications = [];
+  if (!Array.isArray(data.sessions)) data.sessions = [];
 }
 
 function load() {
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf8');
-      if (raw && raw.trim().length > 0) {
+      if (raw && raw.trim()) {
         data = JSON.parse(raw);
       } else {
         data = JSON.parse(JSON.stringify(defaultData));
@@ -60,7 +40,7 @@ function load() {
       data = JSON.parse(JSON.stringify(defaultData));
     }
   } catch (err) {
-    console.error('[Storage] Error loading data.json, using defaults:', err);
+    console.error('[Storage] Failed to load data.json, using defaults:', err);
     data = JSON.parse(JSON.stringify(defaultData));
   }
 
@@ -76,8 +56,6 @@ function save() {
   }
 }
 
-// --- Guild config helpers ---
-
 function getGuildConfig(guildId) {
   ensureShape();
 
@@ -85,28 +63,47 @@ function getGuildConfig(guildId) {
     data.guilds[guildId] = {
       name: null,
 
+      // who can use the admin panel for this guild
       adminRoleIds: [],
 
-      // Clock system
-      clockTypes: [
-        // { key: 'patrol', label: 'Patrol', addRoleIds: [], removeRoleIdsOnOut: [] }
-      ],
+      // clock / duty
       onDutyRoleId: null,
       clockStatusChannelId: null,
-
-      // Tickets
-      ticketTypes: [
-        // { key: 'general', label: 'General Support', template: '...', pingRoleIds: [] }
+      clockTypes: [
+        // example:
+        // { key: 'patrol', label: 'Patrol', addRoleIds: [], removeRoleIdsOnOut: [] }
       ],
+
+      // tickets
       ticketPanelChannelId: null,
       ticketPanelMessageId: null,
-
-      // Applications
-      applicationTypes: [
-        // { key: 'patrol', label: 'Patrol Application', questions: [], addRoleIds: [], removeRoleIds: [], pingRoleIds: [] }
+      ticketTypes: [
+        // {
+        //   key: 'general',
+        //   label: 'General Support',
+        //   description: 'Help with general questions or issues.',
+        //   pingRoleIds: []
+        // }
       ],
+
+      // applications
       applicationPanelChannelId: null,
-      applicationPanelMessageId: null
+      applicationPanelMessageId: null,
+      applicationTypes: [
+        // {
+        //   key: 'patrol',
+        //   label: 'Patrol Application',
+        //   questions: [
+        //     'In-game name',
+        //     'Age (OOC)',
+        //     'RP / LEO experience',
+        //     'Why do you want to join this division?'
+        //   ],
+        //   addRoleIds: [],       // on approve
+        //   removeRoleIds: [],    // on approve
+        //   pingRoleIds: []       // pinged when app is submitted
+        // }
+      ]
     };
     save();
   }
@@ -122,38 +119,18 @@ function updateGuildConfig(guildId, patch) {
   return cfg;
 }
 
-// --- Tickets ---
+// ------------- Tickets -------------
 
 function createTicket(ticketData) {
   ensureShape();
-  const ticket = {
+  const t = {
     id: `t_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
     status: 'open',
     createdAt: Date.now(),
     closedAt: null,
     ...ticketData
   };
-  data.tickets.push(ticket);
-  save();
-  return ticket;
-}
-
-function getTicketByChannel(guildId, channelId) {
-  ensureShape();
-  return data.tickets.find(t => t.guildId === guildId && t.channelId === channelId);
-}
-
-function getTicketById(id) {
-  ensureShape();
-  return data.tickets.find(t => t.id === id);
-}
-
-function closeTicket(ticketId) {
-  ensureShape();
-  const t = data.tickets.find(x => x.id === ticketId);
-  if (!t) return null;
-  t.status = 'closed';
-  t.closedAt = Date.now();
+  data.tickets.push(t);
   save();
   return t;
 }
@@ -169,11 +146,31 @@ function listTickets(guildId, filter = {}) {
     });
 }
 
-// --- Applications ---
+function getTicketByChannel(guildId, channelId) {
+  ensureShape();
+  return data.tickets.find(t => t.guildId === guildId && t.channelId === channelId);
+}
+
+function getTicketById(id) {
+  ensureShape();
+  return data.tickets.find(t => t.id === id);
+}
+
+function closeTicketByChannel(guildId, channelId) {
+  ensureShape();
+  const t = data.tickets.find(x => x.guildId === guildId && x.channelId === channelId && x.status === 'open');
+  if (!t) return null;
+  t.status = 'closed';
+  t.closedAt = Date.now();
+  save();
+  return t;
+}
+
+// ------------- Applications -------------
 
 function createApplication(appData) {
   ensureShape();
-  const app = {
+  const a = {
     id: `a_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
     status: 'pending',
     createdAt: Date.now(),
@@ -181,14 +178,9 @@ function createApplication(appData) {
     decidedBy: null,
     ...appData
   };
-  data.applications.push(app);
+  data.applications.push(a);
   save();
-  return app;
-}
-
-function getApplicationById(id) {
-  ensureShape();
-  return data.applications.find(a => a.id === id);
+  return a;
 }
 
 function listApplications(guildId, filter = {}) {
@@ -202,6 +194,11 @@ function listApplications(guildId, filter = {}) {
     });
 }
 
+function getApplicationById(id) {
+  ensureShape();
+  return data.applications.find(a => a.id === id);
+}
+
 function decideApplication(id, status, decidedBy) {
   ensureShape();
   const app = getApplicationById(id);
@@ -213,18 +210,19 @@ function decideApplication(id, status, decidedBy) {
   return app;
 }
 
-// --- Duty sessions ---
+// ------------- Duty sessions -------------
 
 function clockIn(guildId, userId, clockTypeKeys) {
   ensureShape();
-  // Close any existing open session
+
+  // close any existing open sessions for that user in this guild
   data.sessions.forEach(s => {
     if (s.guildId === guildId && s.userId === userId && !s.clockOut) {
       s.clockOut = Date.now();
     }
   });
 
-  const session = {
+  const s = {
     id: `s_${Date.now()}_${Math.floor(Math.random() * 999999)}`,
     guildId,
     userId,
@@ -232,9 +230,9 @@ function clockIn(guildId, userId, clockTypeKeys) {
     clockIn: Date.now(),
     clockOut: null
   };
-  data.sessions.push(session);
+  data.sessions.push(s);
   save();
-  return session;
+  return s;
 }
 
 function clockOut(guildId, userId) {
@@ -269,63 +267,29 @@ function getSessionsInRange(guildId, fromTs, clockTypeKey = null) {
   return data.sessions.filter(s => {
     if (s.guildId !== guildId) return false;
     if (!s.clockOut || s.clockOut < fromTs) return false;
-    if (clockTypeKey && !s.clockTypes.includes(clockTypeKey)) return false;
+    if (clockTypeKey && !(s.clockTypes || []).includes(clockTypeKey)) return false;
     return true;
   });
 }
 
-// --- Global bans ---
-
-function addGlobalBan(userId, reason, bannedBy) {
-  ensureShape();
-  if (data.globalBans.find(b => b.userId === userId)) return;
-  data.globalBans.push({
-    userId,
-    reason: reason || 'No reason provided',
-    bannedBy,
-    createdAt: Date.now()
-  });
-  save();
-}
-
-function removeGlobalBan(userId) {
-  ensureShape();
-  data.globalBans = data.globalBans.filter(b => b.userId !== userId);
-  save();
-}
-
-function isGloballyBanned(userId) {
-  ensureShape();
-  return !!data.globalBans.find(b => b.userId === userId);
-}
-
-function listGlobalBans() {
-  ensureShape();
-  return data.globalBans;
-}
-
-// --- Init ---
+// --- init ---
 load();
 
 module.exports = {
   getGuildConfig,
   updateGuildConfig,
   createTicket,
+  listTickets,
   getTicketByChannel,
   getTicketById,
-  closeTicket,
-  listTickets,
+  closeTicketByChannel,
   createApplication,
-  getApplicationById,
   listApplications,
+  getApplicationById,
   decideApplication,
   clockIn,
   clockOut,
   getOpenSessions,
   getUserSessionsInRange,
-  getSessionsInRange,
-  addGlobalBan,
-  removeGlobalBan,
-  isGloballyBanned,
-  listGlobalBans
+  getSessionsInRange
 };
