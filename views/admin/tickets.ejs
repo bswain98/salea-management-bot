@@ -1,0 +1,47 @@
+<% layout('layout') %>
+
+<section class="page-header">
+  <h1>Tickets</h1>
+  <form method="GET" class="filter-row">
+    <input type="hidden" name="guildId" value="<%= activeGuild.id %>" />
+    <label>
+      Status:
+      <select name="status" onchange="this.form.submit()">
+        <option value="">All</option>
+        <option value="open" <%= filterStatus === 'open' ? 'selected' : '' %>>Open</option>
+        <option value="closed" <%= filterStatus === 'closed' ? 'selected' : '' %>>Closed</option>
+      </select>
+    </label>
+  </form>
+</section>
+
+<section class="card">
+  <% if (!tickets || tickets.length === 0) { %>
+    <p class="muted">No tickets found for this filter.</p>
+  <% } else { %>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Type</th>
+          <th>User</th>
+          <th>Subject</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% tickets.forEach(t => { %>
+          <tr>
+            <td><code><%= t.id %></code></td>
+            <td><span class="badge badge-<%= t.status %>"><%= t.status %></span></td>
+            <td><%= t.type %></td>
+            <td><@<%= t.userId %>></td>
+            <td><%= t.subject || 'N/A' %></td>
+            <td><%= new Date(t.createdAt).toLocaleString() %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+</section>
