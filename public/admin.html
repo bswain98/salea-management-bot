@@ -26,7 +26,7 @@
     .container {
       padding: 16px 24px;
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 260px 1fr 300px;
       gap: 16px;
     }
     .card {
@@ -69,6 +69,9 @@
     button.secondary {
       background: #4b5563;
     }
+    button.danger {
+      background: #b91c1c;
+    }
     button:disabled {
       opacity: 0.5;
       cursor: default;
@@ -102,6 +105,9 @@
       border-bottom: 1px solid #1f2937;
       padding: 4px 0;
     }
+    .row:hover {
+      background: #020617;
+    }
     .small {
       font-size: 12px;
       color: #9ca3af;
@@ -116,6 +122,11 @@
       align-items: center;
       margin-bottom: 6px;
     }
+    .stack {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
@@ -125,7 +136,7 @@
 </header>
 
 <div class="container">
-  <!-- Left column: guild + config -->
+  <!-- Left column: guild + config + panel deploy -->
   <div>
     <div class="card">
       <h2>1. Guild</h2>
@@ -151,13 +162,24 @@
         </ul>
       </div>
     </div>
+
+    <div class="card">
+      <div class="section-header">
+        <h3>3. Deploy Panels</h3>
+      </div>
+      <div class="stack">
+        <button id="deploy-ticket">Deploy Ticket Panel</button>
+        <button id="deploy-app" class="secondary">Deploy Application Panel</button>
+      </div>
+      <div id="deploy-status" class="small" style="margin-top:6px;"></div>
+    </div>
   </div>
 
-  <!-- Right column: live board, tickets, apps -->
+  <!-- Middle column: live board, tickets, apps -->
   <div>
     <div class="card">
       <div class="section-header">
-        <h3>3. Live On-Duty Board</h3>
+        <h3>4. Live On-Duty Board</h3>
         <button id="refresh-duty" class="secondary">Refresh</button>
       </div>
       <div id="duty-live" class="list small">No guild selected.</div>
@@ -165,7 +187,7 @@
 
     <div class="card">
       <div class="section-header">
-        <h3>4. Tickets</h3>
+        <h3>5. Tickets</h3>
         <button id="refresh-tickets" class="secondary">Refresh</button>
       </div>
       <div id="tickets" class="list small">No guild selected.</div>
@@ -173,10 +195,19 @@
 
     <div class="card">
       <div class="section-header">
-        <h3>5. Applications</h3>
+        <h3>6. Applications</h3>
         <button id="refresh-apps" class="secondary">Refresh</button>
       </div>
       <div id="apps" class="list small">No guild selected.</div>
+    </div>
+  </div>
+
+  <!-- Right column: detail view -->
+  <div>
+    <div class="card">
+      <h3>7. Detail</h3>
+      <div id="detail-type" class="small" style="margin-bottom:4px;">Select a ticket or application.</div>
+      <pre id="detail-json">{ }</pre>
     </div>
   </div>
 </div>
@@ -188,6 +219,9 @@
   const dutyLiveDiv = document.getElementById('duty-live');
   const ticketsDiv = document.getElementById('tickets');
   const appsDiv = document.getElementById('apps');
+  const deployStatus = document.getElementById('deploy-status');
+  const detailType = document.getElementById('detail-type');
+  const detailJson = document.getElementById('detail-json');
 
   let me = null;
   let currentGuildId = null;
@@ -315,8 +349,18 @@
         <div class="small">
           User: ${t.userId} • Channel: ${t.channelId} • Created: ${fmtTime(t.createdAt)}
         </div>
+        <div class="small">
+          <button data-ticket-id="${t.id}" class="secondary">View</button>
+        </div>
       `;
       ticketsDiv.appendChild(row);
+    });
+
+    ticketsDiv.querySelectorAll('button[data-ticket-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-ticket-id');
+        showTicketDetail(id);
+      });
     });
   }
 
@@ -344,8 +388,9 @@
           User: ${a.userId} • Created: ${fmtTime(a.createdAt)}
         </div>
         <div class="small">
+          <button data-app-id="${id}" data-action="view" class="secondary">View</button>
           <button data-app-id="${id}" data-action="approve">Approve</button>
-          <button data-app-id="${id}" data-action="deny" class="secondary">Deny</button>
+          <button data-app-id="${id}" data-action="deny" class="danger">Deny</button>
         </div>
       `;
       appsDiv.appendChild(row);
@@ -355,6 +400,12 @@
       btn.addEventListener('click', async () => {
         const id = btn.getAttribute('data-app-id');
         const action = btn.getAttribute('data-action');
+
+        if (action === 'view') {
+          showAppDetail(id);
+          return;
+        }
+
         let body = { status: action === 'approve' ? 'approved' : 'denied' };
         if (action === 'deny') {
           const reason = prompt('Reason for denial?') || 'No reason provided';
@@ -374,13 +425,56 @@
     });
   }
 
+  async function showTicketDetail(id) {
+    if (!currentGuildId) return;
+    try {
+      const t = await api(`/api/guilds/${currentGuildId}/tickets/${id}`);
+      detailType.textContent = `Ticket ${id}`;
+      detailJson.textContent = JSON.stringify(t, null, 2);
+    } catch (err) {
+      alert('Error loading ticket: ' + err.message);
+    }
+  }
+
+  async function showAppDetail(id) {
+    if (!currentGuildId) return;
+    try {
+      const a = await api(`/api/guilds/${currentGuildId}/applications/${id}`);
+      detailType.textContent = `Application ${id}`;
+      detailJson.textContent = JSON.stringify(a, null, 2);
+    } catch (err) {
+      alert('Error loading application: ' + err.message);
+    }
+  }
+
+  async function deployPanel(kind) {
+    if (!currentGuildId) {
+      alert('Select a guild first.');
+      return;
+    }
+    deployStatus.textContent = `Deploying ${kind} panel...`;
+    try {
+      const result = await api(`/api/guilds/${currentGuildId}/deploy-panel`, {
+        method: 'POST',
+        body: JSON.stringify({ kind })
+      });
+      deployStatus.textContent = `✅ Deployed ${kind} panel. Message ID: ${result.messageId}`;
+    } catch (err) {
+      deployStatus.textContent = `❌ Error deploying ${kind} panel: ${err.message}`;
+    }
+  }
+
   guildSelect.addEventListener('change', async () => {
     currentGuildId = guildSelect.value || null;
+    detailType.textContent = 'Select a ticket or application.';
+    detailJson.textContent = '{ }';
+
     if (!currentGuildId) {
       configJson.value = '';
       dutyLiveDiv.textContent = 'No guild selected.';
       ticketsDiv.textContent = 'No guild selected.';
       appsDiv.textContent = 'No guild selected.';
+      deployStatus.textContent = '';
       return;
     }
     await loadGuildConfig();
@@ -398,6 +492,9 @@
   document.getElementById('refresh-duty').addEventListener('click', loadDutyLive);
   document.getElementById('refresh-tickets').addEventListener('click', loadTickets);
   document.getElementById('refresh-apps').addEventListener('click', loadApps);
+
+  document.getElementById('deploy-ticket').addEventListener('click', () => deployPanel('ticket'));
+  document.getElementById('deploy-app').addEventListener('click', () => deployPanel('application'));
 
   (async function init() {
     await loadMe();
