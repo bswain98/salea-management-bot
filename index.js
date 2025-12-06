@@ -419,9 +419,9 @@ passport.deserializeUser((obj, done) => {
 // OAuth2 Strategy for Discord
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-const DISCORD_CALLBACK_URL =
+const CALLBACK_URL =
   process.env.DISCORD_CALLBACK_URL ||
-  'https://salea-management-bot.onrender.com/auth/discord/callback;
+  'https://salea-management-bot.onrender.com/auth/discord/callback';
 
 passport.use(
   'discord',
@@ -1632,5 +1632,6 @@ client.on(Events.InteractionCreate, async interaction => {
 // ---------------------------
 
 client.login(process.env.DISCORD_TOKEN);
+
 
 
