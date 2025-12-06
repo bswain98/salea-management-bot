@@ -1,5 +1,4 @@
 // index.js
-require('dotenv').config();
 
 const path = require('path');
 const express = require('express');
@@ -1633,3 +1632,4 @@ client.on(Events.InteractionCreate, async interaction => {
 // ---------------------------
 
 client.login(process.env.DISCORD_TOKEN);
+
