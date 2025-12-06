@@ -1,0 +1,46 @@
+<% layout('layout') %>
+
+<section class="page-header">
+  <h1>Applications</h1>
+  <form method="GET" class="filter-row">
+    <input type="hidden" name="guildId" value="<%= activeGuild.id %>" />
+    <label>
+      Status:
+      <select name="status" onchange="this.form.submit()">
+        <option value="">All</option>
+        <option value="pending" <%= filterStatus === 'pending' ? 'selected' : '' %>>Pending</option>
+        <option value="approved" <%= filterStatus === 'approved' ? 'selected' : '' %>>Approved</option>
+        <option value="denied" <%= filterStatus === 'denied' ? 'selected' : '' %>>Denied</option>
+      </select>
+    </label>
+  </form>
+</section>
+
+<section class="card">
+  <% if (!applications || applications.length === 0) { %>
+    <p class="muted">No applications found for this filter.</p>
+  <% } else { %>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Type</th>
+          <th>User</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% applications.forEach(a => { %>
+          <tr>
+            <td><code><%= a.id %></code></td>
+            <td><span class="badge badge-<%= a.status %>"><%= a.status %></span></td>
+            <td><%= a.typeKey %></td>
+            <td><@<%= a.userId %>></td>
+            <td><%= new Date(a.createdAt).toLocaleString() %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+</section>
