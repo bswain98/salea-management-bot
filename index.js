@@ -27,6 +27,7 @@ const {
   updateGuildConfig,
   createTicket,
   getTicketByChannel,
+  getTicketById,
   closeTicket,
   listTickets,
   createApplication,
@@ -273,7 +274,6 @@ client.on('interactionCreate', async interaction => {
     // CLOCK
     if (interaction.commandName === 'clock') {
       const sub = interaction.options.getSubcommand();
-      const member = await guild.members.fetch(interaction.user.id);
 
       if (sub === 'in') {
         const typesRaw = interaction.options.getString('types');
@@ -298,7 +298,8 @@ client.on('interactionCreate', async interaction => {
         const session = clockIn(guild.id, interaction.user.id, keys);
 
         // role handling
-        if (cfg.onDutyRoleId) {
+        const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+        if (member && cfg.onDutyRoleId) {
           await member.roles.add(cfg.onDutyRoleId).catch(() => {});
         }
 
@@ -487,7 +488,10 @@ client.on('interactionCreate', async interaction => {
 
   // BUTTONS (Panels)
   if (interaction.isButton()) {
-    const [kind, guildId, typeKey] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    if (parts.length < 3) return;
+
+    const [kind, guildId, typeKey] = parts;
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
       return interaction.reply({ content: '❌ Guild no longer available.', ephemeral: true });
@@ -545,9 +549,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: '❌ Application type not configured.', ephemeral: true });
       }
 
-      // For simplicity v1: collect answers via DM-style prompt in the admin panel only.
-      // Here we just create a stub application and tell user to complete via admin workflow.
-
       const app = createApplication({
         guildId,
         userId: interaction.user.id,
@@ -559,12 +560,12 @@ client.on('interactionCreate', async interaction => {
 
       const pingText = (typeCfg.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
 
-      // Log to a channel if configured
+      // Log to app panel channel if configured
       if (cfg.applicationPanelChannelId) {
         const ch = await guild.channels.fetch(cfg.applicationPanelChannelId).catch(() => null);
         if (ch && ch.isTextBased()) {
           const embed = new EmbedBuilder()
-            .setTitle(`New Application Started - ${typeCfg.label}`)
+            .setTitle(`New Application - ${typeCfg.label}`)
             .setDescription(`User: <@${interaction.user.id}>\nApplication ID: \`${app.id}\``)
             .setTimestamp(new Date());
           await ch.send({ content: pingText || undefined, embeds: [embed] }).catch(() => {});
@@ -639,7 +640,7 @@ app.get('/auth/failure', (req, res) => {
 
 // Middleware
 function ensureAuth(req, res, next) {
-  if (req.isAuthenticated()) return next();
+  if (req.isAuthenticated && req.isAuthenticated()) return next();
   res.redirect('/auth/discord');
 }
 
@@ -693,7 +694,135 @@ app.post('/api/guilds/:guildId/config', ensureAuth, (req, res) => {
   res.json(updated);
 });
 
-// API: tickets
+// API: deploy panels (ticket or application) from admin panel
+app.post('/api/guilds/:guildId/deploy-panel', ensureAuth, async (req, res) => {
+  const guildId = req.params.guildId;
+  const { kind } = req.body; // 'ticket' or 'application'
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) return res.status(404).json({ error: 'Guild not found by bot' });
+
+  const cfg = getGuildConfig(guildId);
+
+  if (kind === 'ticket') {
+    if (!cfg.ticketPanelChannelId) {
+      return res.status(400).json({ error: 'ticketPanelChannelId not set in config' });
+    }
+    if (!Array.isArray(cfg.ticketTypes) || cfg.ticketTypes.length === 0) {
+      return res.status(400).json({ error: 'No ticketTypes configured' });
+    }
+
+    const channel = await guild.channels.fetch(cfg.ticketPanelChannelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      return res.status(400).json({ error: 'Invalid ticketPanelChannelId (not a text channel)' });
+    }
+
+    // delete old panel message if exists
+    if (cfg.ticketPanelMessageId) {
+      try {
+        const oldMsg = await channel.messages.fetch(cfg.ticketPanelMessageId);
+        if (oldMsg) await oldMsg.delete();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('Support Tickets')
+      .setDescription('Click a button below to open a ticket.')
+      .setColor(0x2563eb);
+
+    const rows = [];
+    let currentRow = new ActionRowBuilder();
+    let countInRow = 0;
+
+    cfg.ticketTypes.forEach(t => {
+      const btn = new ButtonBuilder()
+        .setCustomId(`ticket:${guildId}:${t.key}`)
+        .setLabel(t.label || t.key)
+        .setStyle(ButtonStyle.Primary);
+
+      currentRow.addComponents(btn);
+      countInRow++;
+
+      if (countInRow === 5) {
+        rows.push(currentRow);
+        currentRow = new ActionRowBuilder();
+        countInRow = 0;
+      }
+    });
+
+    if (countInRow > 0) rows.push(currentRow);
+
+    const msg = await channel.send({ embeds: [embed], components: rows });
+    cfg.ticketPanelMessageId = msg.id;
+    updateGuildConfig(guildId, cfg);
+
+    return res.json({ ok: true, messageId: msg.id });
+  }
+
+  if (kind === 'application') {
+    if (!cfg.applicationPanelChannelId) {
+      return res.status(400).json({ error: 'applicationPanelChannelId not set in config' });
+    }
+    if (!Array.isArray(cfg.applicationTypes) || cfg.applicationTypes.length === 0) {
+      return res.status(400).json({ error: 'No applicationTypes configured' });
+    }
+
+    const channel = await guild.channels.fetch(cfg.applicationPanelChannelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      return res.status(400).json({ error: 'Invalid applicationPanelChannelId (not a text channel)' });
+    }
+
+    // delete old panel message if exists
+    if (cfg.applicationPanelMessageId) {
+      try {
+        const oldMsg = await channel.messages.fetch(cfg.applicationPanelMessageId);
+        if (oldMsg) await oldMsg.delete();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('Applications')
+      .setDescription('Click a button below to start an application.')
+      .setColor(0x22c55e);
+
+    const rows = [];
+    let currentRow = new ActionRowBuilder();
+    let countInRow = 0;
+
+    cfg.applicationTypes.forEach(t => {
+      const btn = new ButtonBuilder()
+        .setCustomId(`app:${guildId}:${t.key}`)
+        .setLabel(t.label || t.key)
+        .setStyle(ButtonStyle.Secondary);
+
+      currentRow.addComponents(btn);
+      countInRow++;
+
+      if (countInRow === 5) {
+        rows.push(currentRow);
+        currentRow = new ActionRowBuilder();
+        countInRow = 0;
+      }
+    });
+
+    if (countInRow > 0) rows.push(currentRow);
+
+    const msg = await channel.send({ embeds: [embed], components: rows });
+    cfg.applicationPanelMessageId = msg.id;
+    updateGuildConfig(guildId, cfg);
+
+    return res.json({ ok: true, messageId: msg.id });
+  }
+
+  return res.status(400).json({ error: 'Unknown kind, expected ticket or application' });
+});
+
+// API: tickets list
 app.get('/api/guilds/:guildId/tickets', ensureAuth, (req, res) => {
   const guildId = req.params.guildId;
   if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
@@ -702,7 +831,19 @@ app.get('/api/guilds/:guildId/tickets', ensureAuth, (req, res) => {
   res.json(list);
 });
 
-// API: applications
+// API: ticket detail
+app.get('/api/guilds/:guildId/tickets/:id', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  const id = req.params.id;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const ticket = getTicketById(id);
+  if (!ticket || ticket.guildId !== guildId) {
+    return res.status(404).json({ error: 'Ticket not found' });
+  }
+  res.json(ticket);
+});
+
+// API: applications list
 app.get('/api/guilds/:guildId/applications', ensureAuth, (req, res) => {
   const guildId = req.params.guildId;
   if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
@@ -711,6 +852,19 @@ app.get('/api/guilds/:guildId/applications', ensureAuth, (req, res) => {
   res.json(list);
 });
 
+// API: application detail
+app.get('/api/guilds/:guildId/applications/:id', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  const id = req.params.id;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const appRec = getApplicationById(id);
+  if (!appRec || appRec.guildId !== guildId) {
+    return res.status(404).json({ error: 'Application not found' });
+  }
+  res.json(appRec);
+});
+
+// API: application decision (approve/deny)
 app.post('/api/guilds/:guildId/applications/:id/decision', ensureAuth, async (req, res) => {
   const guildId = req.params.guildId;
   const id = req.params.id;
@@ -792,12 +946,22 @@ app.get('/api/global-bans', ensureAuth, (req, res) => {
   res.json(listGlobalBans());
 });
 
+// API: current user
+app.get('/api/me', ensureAuth, (req, res) => {
+  res.json({ id: req.user.id, username: req.user.username, guilds: req.user.guilds || [] });
+});
+
 // Admin logout
 app.post('/api/logout', ensureAuth, (req, res) => {
   req.logout(() => {
     res.json({ ok: true });
   });
 });
+
+// Static admin UI
+app.use('/public', express.static('public'));
+
+// MAIN admin page already defined above
 
 // Start server
 const PORT = process.env.PORT || 10000;
