@@ -156,7 +156,7 @@ function ensureClientReady() {
 }
 
 // ---------------------------
-// Duty board
+// Duty board (single guild based on config.GUILD_ID)
 // ---------------------------
 async function updateDutyBoard() {
   if (!GUILD_ID) {
@@ -232,7 +232,15 @@ async function updateDutyBoard() {
 // Admin session helpers
 // ---------------------------
 function isAdminSession(req) {
-  return req.isAuthenticated && req.isAuthenticated() && req.session && req.session.isAdmin;
+  return (
+    req.isAuthenticated &&
+    req.isAuthenticated() &&
+    req.session &&
+    req.session.isAdmin === true &&
+    Array.isArray(req.session.adminGuildIds) &&
+    req.session.adminGuildIds.length > 0 &&
+    !!req.session.activeGuildId
+  );
 }
 
 function requireAdmin(req, res, next) {
@@ -246,6 +254,7 @@ function requireAdmin(req, res, next) {
 // OAuth routes
 app.get('/auth/discord', passport.authenticate('discord'));
 
+// Multi-guild admin: any guild where user has --High Command-- or configured adminRoleIds
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/auth-failed' }),
@@ -253,35 +262,42 @@ app.get(
     try {
       await ensureClientReady();
 
-      if (!GUILD_ID) {
-        console.error('No GUILD_ID configured.');
-        return res.status(500).send('Bot configuration error: missing guild ID.');
+      const adminGuildIds = [];
+      const adminGuilds = [];
+
+      for (const [guildId, guild] of client.guilds.cache) {
+        const member = await guild.members.fetch(req.user.id).catch(() => null);
+        if (!member) continue;
+
+        const cfg = getGuildConfig(guildId);
+
+        const hasNamedHC = member.roles.cache.some(role => role.name === '--High Command--');
+        const hasConfigAdmin =
+          cfg.adminRoleIds && cfg.adminRoleIds.some(rid => member.roles.cache.has(rid));
+
+        if (hasNamedHC || hasConfigAdmin) {
+          adminGuildIds.push(guildId);
+          adminGuilds.push({
+            id: guildId,
+            name: guild.name
+          });
+
+          setGuildAdminRoles(guildId, cfg.adminRoleIds || [], guild.name);
+        }
       }
 
-      const guild = await client.guilds.fetch(GUILD_ID);
-      const member = await guild.members.fetch(req.user.id).catch(() => null);
-
-      if (!member) {
+      if (adminGuildIds.length === 0) {
         req.logout(() => {});
         return res
           .status(403)
-          .send('You must be in the SALEA Discord server to use this admin panel.');
-      }
-
-      // Admin = has role named "--High Command--" OR in highCommandRoleIds
-      const hasNamedHC = member.roles.cache.some(role => role.name === '--High Command--');
-      const hcIds = (config.roles && config.roles.highCommandRoleIds) || [];
-      const hasConfigHC = hcIds.length > 0 ? hasAnyRole(member, hcIds) : false;
-      const isAdmin = hasNamedHC || hasConfigHC;
-
-      if (!isAdmin) {
-        req.logout(() => {});
-        return res
-          .status(403)
-          .send('You do not have the --High Command-- role required for admin access.');
+          .send('You do not have admin access in any guild (missing --High Command-- or configured admin roles).');
       }
 
       req.session.isAdmin = true;
+      req.session.adminGuildIds = adminGuildIds;
+      req.session.activeGuildId = adminGuildIds[0];
+      req.session.adminGuilds = adminGuilds;
+
       res.redirect('/admin');
     } catch (err) {
       console.error('Error during Discord auth callback:', err);
@@ -307,16 +323,108 @@ app.get('/admin', requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
+// Current user info + admin guilds
 app.get('/api/me', (req, res) => {
-  if (!isAdminSession(req)) return res.status(401).json({ authenticated: false });
+  if (!isAdminSession(req)) {
+    return res.status(401).json({ authenticated: false });
+  }
+
   res.json({
     authenticated: true,
     user: {
       id: req.user.id,
       username: req.user.username,
       discriminator: req.user.discriminator
-    }
+    },
+    adminGuilds: req.session.adminGuilds || [],
+    activeGuildId: req.session.activeGuildId
   });
+});
+
+// List guilds the user is in, their roles, and configured adminRoleIds
+app.get('/api/guilds', requireAdmin, async (req, res) => {
+  try {
+    await ensureClientReady();
+
+    const result = [];
+
+    for (const [guildId, guild] of client.guilds.cache) {
+      const member = await guild.members.fetch(req.user.id).catch(() => null);
+      if (!member) continue;
+
+      await guild.roles.fetch().catch(() => null);
+
+      const cfg = getGuildConfig(guildId);
+      const adminRoleIds = cfg.adminRoleIds || [];
+      const roles = guild.roles.cache.map(role => ({
+        id: role.id,
+        name: role.name
+      }));
+      const isAdminGuild = (req.session.adminGuildIds || []).includes(guildId);
+
+      result.push({
+        id: guildId,
+        name: guild.name,
+        isAdminGuild,
+        adminRoleIds,
+        roles
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error('/api/guilds error:', err);
+    res.status(500).json({ error: 'Failed to load guilds.' });
+  }
+});
+
+// Set admin roles for a specific guild
+app.post('/api/guilds/:guildId/admin-roles', requireAdmin, async (req, res) => {
+  try {
+    const { guildId } = req.params;
+    const { roleIds } = req.body || {};
+
+    if (!Array.isArray(roleIds)) {
+      return res.status(400).json({ error: 'roleIds must be an array of IDs.' });
+    }
+
+    const adminGuildIds = req.session.adminGuildIds || [];
+    if (!adminGuildIds.includes(guildId)) {
+      return res.status(403).json({ error: 'You are not an admin for this guild.' });
+    }
+
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) {
+      return res.status(404).json({ error: 'Guild not found.' });
+    }
+
+    const cfg = setGuildAdminRoles(guildId, roleIds, guild.name);
+
+    req.session.adminGuilds = (req.session.adminGuilds || []).map(g =>
+      g.id === guildId ? { id: guildId, name: guild.name } : g
+    );
+
+    res.json({
+      guildId,
+      adminRoleIds: cfg.adminRoleIds
+    });
+  } catch (err) {
+    console.error('/api/guilds/:guildId/admin-roles error:', err);
+    res.status(500).json({ error: 'Failed to update admin roles.' });
+  }
+});
+
+// Change active guild in this admin session
+app.post('/api/select-guild', requireAdmin, (req, res) => {
+  const { guildId } = req.body || {};
+  const adminGuildIds = req.session.adminGuildIds || [];
+
+  if (!guildId || !adminGuildIds.includes(guildId)) {
+    return res.status(403).json({ error: 'You are not an admin for that guild.' });
+  }
+
+  req.session.activeGuildId = guildId;
+  res.json({ ok: true, activeGuildId: guildId });
 });
 
 // ---------------------------
@@ -508,25 +616,22 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 // ---------------------------
-// Client ready – register commands
+// Client ready – register GLOBAL commands
 // ---------------------------
 client.once(Events.ClientReady, async readyClient => {
   isBotReady = true;
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
 
-  if (!CLIENT_ID || !GUILD_ID) {
+  if (!CLIENT_ID) {
     console.error(
-      '[Slash] Missing CLIENT_ID or GUILD_ID – skipping slash command registration. Set DISCORD_CLIENT_ID and DISCORD_GUILD_ID in Render.'
+      '[Slash] Missing CLIENT_ID – skipping slash command registration. Set DISCORD_CLIENT_ID in Render.'
     );
   } else {
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
-      console.log('🔁 Refreshing application (slash) commands...');
-      await rest.put(
-        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-        { body: commands }
-      );
-      console.log('✅ Slash commands registered.');
+      console.log('🔁 Refreshing **global** application (slash) commands...');
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      console.log('✅ Global slash commands registered.');
     } catch (error) {
       console.error('❌ Error registering commands:', error);
     }
@@ -884,7 +989,11 @@ client.on(Events.InteractionCreate, async interaction => {
               .addFields(
                 { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
                 { name: 'Closed By', value: `<@${interaction.user.id}>`, inline: true },
-                { name: 'Original User', value: ticket ? `<@${ticket.userId}>` : 'Unknown', inline: true }
+                {
+                  name: 'Original User',
+                  value: ticket ? `<@${ticket.userId}>` : 'Unknown',
+                  inline: true
+                }
               )
               .setTimestamp(new Date());
 
@@ -1237,4 +1346,3 @@ if (!BOT_TOKEN) {
 } else {
   client.login(BOT_TOKEN);
 }
-
