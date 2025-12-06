@@ -313,6 +313,27 @@
           <div id="activeAdminRoles" class="pill-row"></div>
         </div>
       </div>
+
+      <!-- Feature Toggles -->
+      <div class="card">
+        <h2>
+          Features
+          <span class="badge">PER-GUILD</span>
+        </h2>
+        <p class="sub">
+          Turn individual modules on or off for the active guild. This affects slash commands and panels.
+        </p>
+
+        <div id="featuresContainer">
+          <div class="status">Select a guild to view features.</div>
+        </div>
+
+        <div class="card-footer">
+          <button class="btn-secondary" type="button" onclick="reloadFeatures()">Reset</button>
+          <button type="button" onclick="saveFeatures()">Save Features</button>
+        </div>
+        <div class="status" id="featuresStatus"></div>
+      </div>
     </div>
   </div>
 
@@ -383,6 +404,7 @@
       loading = true;
       setStatus('guildStatus', 'Loading guilds…');
       setStatus('rolesStatus', '');
+      setStatus('featuresStatus', '');
       try {
         const data = await api('/api/guilds');
         guilds = data || [];
@@ -397,6 +419,8 @@
             '<div class="status error">No roles to show (no admin guilds).</div>';
           document.getElementById('adminGuildList').innerHTML = '';
           document.getElementById('activeAdminRoles').innerHTML = '';
+          document.getElementById('featuresContainer').innerHTML =
+            '<div class="status error">No features to show (no admin guilds).</div>';
           return;
         }
 
@@ -404,7 +428,7 @@
         guilds.forEach(g => {
           const opt = document.createElement('option');
           opt.value = g.id;
-          opt.textContent = g.name + (g.isAdminGuild ? '' : ' (no panel access)');
+          opt.textContent = g.name;
           if (activeId && g.id === activeId) {
             opt.selected = true;
           }
@@ -412,10 +436,11 @@
         });
 
         sel.disabled = false;
-        sel.addEventListener('change', onGuildChange);
+        sel.onchange = onGuildChange;
 
         updateGuildSummaryUI();
         await renderRolesForActiveGuild();
+        await loadFeaturesForActiveGuild();
 
         setStatus('guildStatus', 'Guilds loaded.', 'ok');
       } catch (err) {
@@ -585,6 +610,103 @@
         console.error('saveAdminRoles error:', err);
         setStatus('rolesStatus', 'Failed to save admin roles.', 'error');
       }
+    }
+
+    async function loadFeaturesForActiveGuild() {
+      const select = document.getElementById('guildSelect');
+      const guildId = select.value;
+      const container = document.getElementById('featuresContainer');
+      container.innerHTML = '<div class="status">Loading features…</div>';
+      setStatus('featuresStatus', '');
+
+      if (!guildId || guildId === 'null') {
+        container.innerHTML = '<div class="status">Select a guild to view features.</div>';
+        return;
+      }
+
+      try {
+        const features = await api(`/api/guilds/${guildId}/features`);
+        renderFeatures(features);
+        setStatus('featuresStatus', 'Features loaded.', 'ok');
+      } catch (err) {
+        console.error('loadFeatures error:', err);
+        container.innerHTML = '<div class="status error">Failed to load features.</div>';
+        setStatus('featuresStatus', 'Failed to load features.', 'error');
+      }
+    }
+
+    function renderFeatures(features) {
+      const container = document.getElementById('featuresContainer');
+      container.innerHTML = '';
+
+      const rows = [
+        { key: 'applications', label: 'Applications' },
+        { key: 'tickets',      label: 'Tickets' },
+        { key: 'reports',      label: 'Reports & Logs' },
+        { key: 'clock',        label: 'Duty Clock' },
+        { key: 'requests',     label: 'Roster / Role Requests' },
+        { key: 'autoPanels',   label: 'Auto Setup Panels on Join' },
+      ];
+
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.gap = '6px';
+
+      rows.forEach(row => {
+        const line = document.createElement('div');
+        line.style.display = 'flex';
+        line.style.alignItems = 'center';
+        line.style.justifyContent = 'space-between';
+        line.style.fontSize = '13px';
+
+        const label = document.createElement('span');
+        label.textContent = row.label;
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.featureKey = row.key;
+        cb.checked = (features && typeof features[row.key] !== 'undefined')
+          ? !!features[row.key]
+          : true;
+
+        line.appendChild(label);
+        line.appendChild(cb);
+        wrap.appendChild(line);
+      });
+
+      container.appendChild(wrap);
+    }
+
+    async function saveFeatures() {
+      const select = document.getElementById('guildSelect');
+      const guildId = select.value;
+      if (!guildId || guildId === 'null') {
+        setStatus('featuresStatus', 'No active guild selected.', 'error');
+        return;
+      }
+
+      const checkboxes = document.querySelectorAll('#featuresContainer input[type="checkbox"][data-feature-key]');
+      const body = {};
+      checkboxes.forEach(cb => {
+        body[cb.dataset.featureKey] = cb.checked;
+      });
+
+      try {
+        setStatus('featuresStatus', 'Saving…');
+        await api(`/api/guilds/${guildId}/features`, {
+          method: 'POST',
+          body,
+        });
+        setStatus('featuresStatus', 'Features saved.', 'ok');
+      } catch (err) {
+        console.error('saveFeatures error:', err);
+        setStatus('featuresStatus', 'Failed to save features.', 'error');
+      }
+    }
+
+    async function reloadFeatures() {
+      await loadFeaturesForActiveGuild();
     }
 
     async function reloadGuilds() {
