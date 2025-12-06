@@ -1,26 +1,621 @@
-<% layout('layout') %>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Aegis / SALEA Admin Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-<section>
-  <h1>Choose a server to manage</h1>
-  <p class="muted">Only servers where you are an admin (Manage Server or configured admin roles) will show as accessible.</p>
+  <style>
+    :root {
+      --bg: #020617;
+      --bg-alt: #020617;
+      --card: #0b1120;
+      --accent: #4f46e5;
+      --accent-soft: rgba(79, 70, 229, 0.15);
+      --accent-danger: #f97373;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --text-muted: #9ca3af;
+      --success: #22c55e;
+      --warning: #f97316;
+    }
 
-  <div class="guild-grid">
-    <% if (!guilds || guilds.length === 0) { %>
-      <p>You don't share any guilds with this bot.</p>
-    <% } %>
+    * {
+      box-sizing: border-box;
+    }
 
-    <% (guilds || []).forEach(g => { %>
-      <div class="card guild-card">
-        <h2><%= g.name %></h2>
-        <p>ID: <code><%= g.id %></code></p>
-        <div class="card-footer">
-          <% if (g.isAdmin) { %>
-            <a href="/admin/guild/<%= g.id %>" class="btn btn-primary">Manage</a>
-          <% } else { %>
-            <button class="btn btn-disabled" disabled>No access</button>
-          <% } %>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1e293b 0, #020617 45%);
+      color: var(--text);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .app-shell {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* SIDEBAR */
+
+    .sidebar {
+      width: 260px;
+      background: var(--bg-alt);
+      border-right: 1px solid var(--border);
+      padding: 1.5rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .sidebar .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 20%, #22c55e, #4f46e5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: white;
+      box-shadow: 0 0 20px rgba(79, 70, 229, 0.6);
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+
+    .brand-text span:first-child {
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .brand-text span:last-child {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #e5e7eb;
+    }
+
+    .sidebar-section-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .nav-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .nav-item {
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: default;
+    }
+
+    .nav-item.primary {
+      background: var(--accent-soft);
+      color: #e5e7eb;
+    }
+
+    .nav-item span.label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .nav-pill {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.2);
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      border-top: 1px solid #111827;
+      padding-top: 0.75rem;
+    }
+
+    .sidebar-footer .user-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .sidebar-footer strong {
+      color: #e5e7eb;
+    }
+
+    .sidebar-footer code {
+      font-size: 0.7rem;
+      background: rgba(15, 23, 42, 0.9);
+      border-radius: 999px;
+      padding: 0.1rem 0.5rem;
+    }
+
+    /* MAIN */
+
+    .main {
+      flex: 1;
+      padding: 1.5rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .topbar-left h1 {
+      font-size: 1.4rem;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .topbar-left h1 span.badge {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(22, 163, 74, 0.1);
+      color: #4ade80;
+      border: 1px solid rgba(22, 163, 74, 0.4);
+    }
+
+    .topbar-left p {
+      margin: 0.25rem 0 0;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .pill {
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      color: var(--text-muted);
+    }
+
+    .pill.online {
+      border-color: rgba(34, 197, 94, 0.5);
+      color: #bbf7d0;
+    }
+
+    .pill-dot {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 999px;
+      display: inline-block;
+      margin-right: 0.25rem;
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.8);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 3fr 2fr;
+      gap: 1.5rem;
+      align-items: flex-start;
+    }
+
+    .card {
+      background: radial-gradient(circle at top left, rgba(79, 70, 229, 0.12), rgba(15, 23, 42, 0.95));
+      border-radius: 1rem;
+      padding: 1rem;
+      border: 1px solid rgba(15, 23, 42, 0.9);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.8);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-header h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--text-muted);
+    }
+
+    .card-header span {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .card-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .field-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .field-row label {
+      width: 140px;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      color: #6b7280;
+    }
+
+    .select,
+    .input {
+      flex: 1;
+      border-radius: 0.5rem;
+      border: 1px solid rgba(31, 41, 55, 0.8);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text);
+      padding: 0.4rem 0.55rem;
+      font-size: 0.8rem;
+    }
+
+    .select:focus,
+    .input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.6);
+    }
+
+    .hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.25rem;
+    }
+
+    .pill-tag {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(31, 41, 55, 0.8);
+      color: var(--text-muted);
+    }
+
+    .btn-row {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+
+    .btn {
+      border-radius: 999px;
+      border: 1px solid transparent;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-muted);
+      transition: all 0.15s ease;
+    }
+
+    .btn.primary {
+      background: linear-gradient(to right, #4f46e5, #6366f1);
+      color: white;
+      border-color: rgba(129, 140, 248, 0.8);
+      box-shadow: 0 14px 30px rgba(79, 70, 229, 0.35);
+    }
+
+    .btn.success {
+      background: linear-gradient(to right, #16a34a, #22c55e);
+      color: white;
+      border-color: rgba(22, 163, 74, 0.8);
+      box-shadow: 0 14px 30px rgba(22, 163, 74, 0.35);
+    }
+
+    .btn.outline {
+      background: transparent;
+      color: var(--text-muted);
+      border-color: rgba(148, 163, 184, 0.4);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.05);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+      filter: brightness(0.97);
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+
+    .status-chip {
+      background: rgba(15, 23, 42, 0.9);
+      border-radius: 0.75rem;
+      padding: 0.6rem;
+      border: 1px solid rgba(31, 41, 55, 0.9);
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+
+    .status-chip label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #6b7280;
+    }
+
+    .status-chip strong {
+      font-size: 0.95rem;
+      color: #e5e7eb;
+    }
+
+    .status-chip span.meta {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    @media (max-width: 1024px) {
+      .app-shell {
+        flex-direction: column;
+      }
+
+      .sidebar {
+        width: 100%;
+        flex-direction: row;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .sidebar-footer {
+        margin-top: 0;
+      }
+
+      .main {
+        padding: 1rem;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">A</div>
+        <div class="brand-text">
+          <span>AEGIS ADMIN</span>
+          <span>Unified Control</span>
         </div>
       </div>
-    <% }) %>
+
+      <div>
+        <div class="sidebar-section-title">Overview</div>
+        <div class="nav-group">
+          <div class="nav-item primary">
+            <span class="label">Dashboard</span>
+            <span class="nav-pill">LIVE</span>
+          </div>
+          <div class="nav-item">
+            <span class="label">Duty &amp; Time Tracking</span>
+            <span class="nav-pill">CLOCK</span>
+          </div>
+          <div class="nav-item">
+            <span class="label">Tickets &amp; Reports</span>
+            <span class="nav-pill">TICKET</span>
+          </div>
+          <div class="nav-item">
+            <span class="label">Applications</span>
+            <span class="nav-pill">APPS</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sidebar-section-title">Setup</div>
+        <div class="nav-group">
+          <div class="nav-item">
+            <span class="label">Guild Configuration</span>
+          </div>
+          <div class="nav-item">
+            <span class="label">Panels &amp; Templates</span>
+          </div>
+          <div class="nav-item">
+            <span class="label">Permissions &amp; Access</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-row">
+          <span>Signed in as<br /><strong><%= (user && user.username) || 'Discord Admin' %></strong></span>
+          <span>Guilds attached: <code><%= (guildCount || 1) %></code></span>
+          <span>Role-gated access via Discord OAuth.</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1>
+            Command Dashboard
+            <span class="badge">LIVE CONTROL</span>
+          </h1>
+          <p>Manage duty clock, tickets, applications, and panels across all connected guilds.</p>
+        </div>
+        <div class="topbar-right">
+          <div class="pill online">
+            <span class="pill-dot"></span>
+            Bot Online
+          </div>
+        </div>
+      </header>
+
+      <section class="grid">
+        <section class="card">
+          <div class="card-header">
+            <h2>On Duty Overview</h2>
+            <span>Clock-in roles &amp; live dashboard</span>
+          </div>
+          <div class="card-body">
+            <div class="field-row">
+              <label>Guild</label>
+              <select class="select">
+                <% if (guilds && guilds.length) { %>
+                  <% guilds.forEach(function(g) { %>
+                    <option value="<%= g.id %>"><%= g.name %></option>
+                  <% }) %>
+                <% } else { %>
+                  <option>No guilds cached yet</option>
+                <% } %>
+              </select>
+            </div>
+
+            <div class="field-row">
+              <label>Duty Roles</label>
+              <div>
+                <div class="hint">
+                  These are configured per guild in the backend. This UI will tie into your API.
+                </div>
+                <div class="pill-row">
+                  <span class="pill-tag">Patrol</span>
+                  <span class="pill-tag">High Command</span>
+                  <span class="pill-tag">CID</span>
+                  <span class="pill-tag">Traffic Unit</span>
+                  <span class="pill-tag">Supervisor</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="status-grid">
+              <div class="status-chip">
+                <label>On Duty</label>
+                <strong>0</strong>
+                <span class="meta">Total across all subdivisions (placeholder)</span>
+              </div>
+              <div class="status-chip">
+                <label>Avg. Session</label>
+                <strong>0h 00m</strong>
+                <span class="meta">Rolling 24h (placeholder)</span>
+              </div>
+              <div class="status-chip">
+                <label>Today</label>
+                <strong>0h 00m</strong>
+                <span class="meta">Total man-hours logged (placeholder)</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button class="btn outline" type="button">
+                Refresh Snapshot
+              </button>
+              <button class="btn primary" type="button">
+                View Full Duty Board
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h2>Panels &amp; Templates</h2>
+            <span>Tickets · Applications · Requests</span>
+          </div>
+          <div class="card-body">
+            <div class="field-row">
+              <label>Ticket Panel</label>
+              <select class="select">
+                <option>Choose channel (wired via API)</option>
+              </select>
+            </div>
+
+            <div class="field-row">
+              <label>App Panel</label>
+              <select class="select">
+                <option>Choose channel (wired via API)</option>
+              </select>
+            </div>
+
+            <div class="field-row">
+              <label>Ping Roles</label>
+              <input class="input" placeholder="@HR, @High Command" />
+            </div>
+
+            <p class="hint">
+              Use these controls to trigger sticky panel posts in the configured channels.
+              The real behavior is driven by your API endpoints.
+            </p>
+
+            <div class="btn-row">
+              <button class="btn outline" type="button">
+                Save Panel Config
+              </button>
+              <button class="btn success" type="button">
+                Post Panels Now
+              </button>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
   </div>
-</section>
+</body>
+</html>
