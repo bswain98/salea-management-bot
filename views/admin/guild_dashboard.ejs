@@ -1,0 +1,91 @@
+<% layout('layout') %>
+
+<section class="page-header">
+  <h1><%= activeGuild.name %> — Dashboard</h1>
+  <form method="POST" action="/admin/guild/<%= activeGuild.id %>/panels/post">
+    <button type="submit" class="btn btn-primary">Post Panels</button>
+  </form>
+</section>
+
+<section class="cards-row">
+  <div class="card stat-card">
+    <div class="stat-label">On Duty Now</div>
+    <div class="stat-value"><%= stats.onDutyCount || 0 %></div>
+  </div>
+  <div class="card stat-card">
+    <div class="stat-label">Open Tickets</div>
+    <div class="stat-value"><%= stats.openTickets || 0 %></div>
+  </div>
+  <div class="card stat-card">
+    <div class="stat-label">Pending Applications</div>
+    <div class="stat-value"><%= stats.pendingApplications || 0 %></div>
+  </div>
+</section>
+
+<section class="flex-cols">
+  <div class="col">
+    <h2>On Duty — Live</h2>
+    <% if (!onDuty || onDuty.length === 0) { %>
+      <p class="muted">No active sessions.</p>
+    <% } else { %>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Types</th>
+            <th>Elapsed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% onDuty.forEach(s => { %>
+            <tr>
+              <td><@<%= s.userId %>></td>
+              <td><%= (s.clockTypes || []).join(', ') || 'N/A' %></td>
+              <td><%= s.elapsedHuman %></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+  </div>
+
+  <div class="col">
+    <h2>Recent Tickets</h2>
+    <% if (!recentTickets || recentTickets.length === 0) { %>
+      <p class="muted">No tickets yet.</p>
+    <% } else { %>
+      <ul class="list">
+        <% recentTickets.forEach(t => { %>
+          <li class="list-item">
+            <span class="badge badge-<%= t.status %>"><%= t.status %></span>
+            <span class="list-main">
+              <strong><%= t.type %></strong> — <%= t.subject || 'No subject' %>
+            </span>
+            <span class="list-meta">
+              <@<%= t.userId %>> • <%= new Date(t.createdAt).toLocaleString() %>
+            </span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+
+    <h2 style="margin-top:1.5rem;">Recent Applications</h2>
+    <% if (!recentApps || recentApps.length === 0) { %>
+      <p class="muted">No applications yet.</p>
+    <% } else { %>
+      <ul class="list">
+        <% recentApps.forEach(a => { %>
+          <li class="list-item">
+            <span class="badge badge-<%= a.status %>"><%= a.status %></span>
+            <span class="list-main">
+              <strong><%= a.typeKey %></strong> — <@<%= a.userId %>>
+            </span>
+            <span class="list-meta">
+              <%= new Date(a.createdAt).toLocaleString() %>
+            </span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+</section>
