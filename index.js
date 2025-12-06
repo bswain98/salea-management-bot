@@ -1,234 +1,137 @@
 // index.js
+require('dotenv').config();
 
-const path = require('path');
 const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
-const OAuth2Strategy = require('passport-oauth2');
+const DiscordStrategy = require('passport-discord').Strategy;
+const bodyParser = require('body-parser');
+
 const {
   Client,
   GatewayIntentBits,
   Partials,
-  Events,
   REST,
   Routes,
   SlashCommandBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   PermissionFlagsBits,
   ChannelType,
   EmbedBuilder,
-  AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 
 const {
-  addApplication,
-  updateApplicationStatus,
-  getLatestApplicationForUser,
-  addTicket,
+  getGuildConfig,
+  updateGuildConfig,
+  createTicket,
+  getTicketByChannel,
   closeTicket,
+  listTickets,
+  createApplication,
+  getApplicationById,
+  listApplications,
+  decideApplication,
   clockIn,
   clockOut,
-  getOpenSession,
-  getSessionsForUserInRange,
+  getOpenSessions,
+  getUserSessionsInRange,
   getSessionsInRange,
-  getAllOpenSessions,
+  addGlobalBan,
+  removeGlobalBan,
+  isGloballyBanned,
+  listGlobalBans
 } = require('./storage');
 
-const {
-  loadGuildConfigs,
-  getGuildConfig,
-  getOrCreateGuildConfig,
-  saveGuildConfig,
-  setGuildAdminRoles,
-  getGuildFeatures,
-  setGuildFeatures,
-} = require('./guildStorage');
+// ---------------------------
+// ENV + constants
+// ---------------------------
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+const SESSION_SECRET = process.env.SESSION_SECRET || 'salea-secret';
+const BASE_URL = process.env.BASE_URL || 'https://salea-management-bot.onrender.com';
+
+if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET) {
+  console.error('❌ Missing DISCORD_TOKEN, DISCORD_CLIENT_ID, or DISCORD_CLIENT_SECRET env vars.');
+  process.exit(1);
+}
+
+const CALLBACK_URL = `${BASE_URL.replace(/\/+$/, '')}/auth/discord/callback`;
+console.log('🌐 Using Discord OAuth callback URL:', CALLBACK_URL);
 
 // ---------------------------
 // Discord client
 // ---------------------------
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessages
   ],
-  partials: [Partials.Channel],
+  partials: [Partials.Channel]
 });
 
-let clientReady = false;
-
 // ---------------------------
-// Utility: time formatting & ranges
+// Slash commands
 // ---------------------------
-
-function msToHuman(ms) {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-
-  const parts = [];
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (parts.length === 0) return '0m';
-  return parts.join(' ');
-}
-
-function getRangeStart(range) {
-  const now = Date.now();
-  const oneDay = 24 * 60 * 60 * 1000;
-  if (range === 'today') {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return today.getTime();
-  } else if (range === 'week') {
-    return now - 7 * oneDay;
-  } else if (range === 'month') {
-    return now - 30 * oneDay;
-  }
-  return 0;
-}
-
-function hasAnyRole(member, roleIds) {
-  if (!member || !roleIds || !roleIds.length) return false;
-  return roleIds.some(id => member.roles.cache.has(id));
-}
-
-function isGuildAdminMember(member, guildId) {
-  if (!member || !guildId) return false;
-  const cfg = getGuildConfig(guildId);
-  const adminRoleIds = cfg.adminRoleIds || [];
-
-  const isHighCommand = member.roles.cache.some(r => r.name === '--High Command--');
-  const hasAdminRole = adminRoleIds.some(id => member.roles.cache.has(id));
-
-  return isHighCommand || hasAdminRole || member.permissions.has(PermissionFlagsBits.Administrator);
-}
-
-// ---------------------------
-// Duty board per guild
-// ---------------------------
-
-const dutyBoardMessageCache = new Map(); // guildId -> messageId
-
-async function updateDutyBoard(guild) {
-  if (!guild) return;
-
-  const cfg = getGuildConfig(guild.id);
-  const channelId = cfg.clockStatusChannelId;
-  if (!channelId) {
-    return;
-  }
-
-  let channel;
-  try {
-    channel = await guild.channels.fetch(channelId);
-  } catch {
-    console.warn('[DutyBoard] Channel not found for ID:', channelId);
-    return;
-  }
-  if (!channel || !channel.isTextBased()) return;
-
-  const sessions = getAllOpenSessions().filter(s => s.guildId === guild.id);
-  if (!sessions || sessions.length === 0) {
-    const content = '📋 **On Duty Board**\nNo one is currently clocked in.';
-    const existingId = dutyBoardMessageCache.get(guild.id);
-    if (existingId) {
-      const msg = await channel.messages.fetch(existingId).catch(() => null);
-      if (msg) {
-        await msg.edit(content).catch(() => {});
-        return;
-      }
-    }
-    const newMsg = await channel.send(content);
-    dutyBoardMessageCache.set(guild.id, newMsg.id);
-    return;
-  }
-
-  const lines = sessions.map(s => {
-    const assignments = Array.isArray(s.assignments)
-      ? s.assignments
-      : s.assignment
-      ? [s.assignment]
-      : [];
-    const assignmentsText = assignments.length > 0 ? assignments.join(', ') : 'Unspecified';
-    const startedUnix = Math.floor(s.clockIn / 1000);
-    const elapsed = msToHuman(Date.now() - s.clockIn);
-
-    return `• <@${s.userId}> – **${assignmentsText}** – on duty since <t:${startedUnix}:R> (**${elapsed}**)`;
-  });
-
-  const header = '📋 **On Duty Board**';
-  const content = `${header}\n${lines.join('\n')}`;
-
-  const existingId = dutyBoardMessageCache.get(guild.id);
-  if (existingId) {
-    const msg = await channel.messages.fetch(existingId).catch(() => null);
-    if (msg) {
-      await msg.edit(content).catch(() => {});
-      return;
-    }
-  }
-
-  const newMsg = await channel.send(content);
-  dutyBoardMessageCache.set(guild.id, newMsg.id);
-}
-
-// ---------------------------
-// Slash command definitions
-// ---------------------------
-
 const commands = [
+  // Clock commands
   new SlashCommandBuilder()
-    .setName('setup-app-panel')
-    .setDescription('Post the application panel with apply buttons.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setName('clock')
+    .setDescription('Clock in/out and view duty status.')
+    .addSubcommand(sub =>
+      sub
+        .setName('in')
+        .setDescription('Clock in.')
+        .addStringOption(opt =>
+          opt
+            .setName('types')
+            .setDescription('Comma-separated clock types (keys) configured in admin panel.')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName('out').setDescription('Clock out.')
+    )
+    .addSubcommand(sub =>
+      sub.setName('status').setDescription('View your current duty status.')
+    ),
 
+  // Ticket commands
+  new SlashCommandBuilder()
+    .setName('ticket')
+    .setDescription('Manage tickets.')
+    .addSubcommand(sub =>
+      sub
+        .setName('close')
+        .setDescription('Close this ticket.')
+    ),
+
+  // Application commands
   new SlashCommandBuilder()
     .setName('app')
-    .setDescription('Application management.')
+    .setDescription('Manage applications.')
     .addSubcommand(sub =>
       sub
         .setName('approve')
-        .setDescription('Approve the latest application for a user.')
-        .addUserOption(opt =>
-          opt
-            .setName('user')
-            .setDescription('Applicant to approve.')
-            .setRequired(true)
-        )
+        .setDescription('Approve an application.')
         .addStringOption(opt =>
           opt
-            .setName('division')
-            .setDescription('Division they are being accepted into.')
+            .setName('id')
+            .setDescription('Application ID.')
             .setRequired(true)
-            .addChoices(
-              { name: 'Patrol', value: 'Patrol' },
-              { name: 'CID', value: 'CID' },
-              { name: 'SRT', value: 'SRT' },
-              { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'Reaper', value: 'Reaper' },
-              { name: 'IA', value: 'IA' },
-              { name: 'Dispatch', value: 'Dispatch' },
-              { name: 'Training Staff', value: 'Training' }
-            )
         )
     )
     .addSubcommand(sub =>
       sub
         .setName('deny')
-        .setDescription('Deny the latest application for a user.')
-        .addUserOption(opt =>
+        .setDescription('Deny an application.')
+        .addStringOption(opt =>
           opt
-            .setName('user')
-            .setDescription('Applicant to deny.')
+            .setName('id')
+            .setDescription('Application ID.')
             .setRequired(true)
         )
         .addStringOption(opt =>
@@ -239,1395 +142,668 @@ const commands = [
         )
     ),
 
+  // Moderation / global bans
   new SlashCommandBuilder()
-    .setName('ticket')
-    .setDescription('Ticket system.')
+    .setName('mod')
+    .setDescription('Moderation commands.')
     .addSubcommand(sub =>
       sub
-        .setName('open')
-        .setDescription('Open a support ticket.')
-        .addStringOption(opt =>
-          opt
-            .setName('type')
-            .setDescription('Type of ticket.')
-            .setRequired(true)
-            .addChoices(
-              { name: 'General', value: 'general' },
-              { name: 'IA / Complaint', value: 'ia' },
-              { name: 'Training / Ride-Along', value: 'training' },
-              { name: 'Tech Issue', value: 'tech' }
-            )
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('subject')
-            .setDescription('Short description of your issue.')
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('close')
-        .setDescription('Close this ticket channel (with transcript).')
-    ),
-
-  new SlashCommandBuilder()
-    .setName('clock')
-    .setDescription('Clock in and out of duty.')
-    .addSubcommand(sub =>
-      sub
-        .setName('in')
-        .setDescription('Clock in for duty.')
-        .addStringOption(opt =>
-          opt
-            .setName('assignment')
-            .setDescription('Select your unit or subdivision.')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Patrol', value: 'Patrol' },
-              { name: 'High Command', value: 'High Command' },
-              { name: 'Command', value: 'Command' },
-              { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'Reaper', value: 'Reaper' },
-              { name: 'CID', value: 'CID' },
-              { name: 'IA', value: 'IA' },
-              { name: 'Supervisor', value: 'Supervisor' }
-            )
-        )
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('out')
-        .setDescription('Clock out of duty.')
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('status')
-        .setDescription('Check your current clock-in status.')
-    ),
-
-  new SlashCommandBuilder()
-    .setName('activity')
-    .setDescription('View duty activity.')
-    .addSubcommand(sub =>
-      sub
-        .setName('self')
-        .setDescription('View your own duty time.')
-        .addStringOption(opt =>
-          opt
-            .setName('range')
-            .setDescription('Time range.')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Today', value: 'today' },
-              { name: 'This Week', value: 'week' },
-              { name: 'This Month', value: 'month' }
-            )
-        )
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName('member')
-        .setDescription('View duty time for another member.')
+        .setName('gban')
+        .setDescription('Globally ban a user from all guilds using this bot.')
         .addUserOption(opt =>
           opt
             .setName('user')
-            .setDescription('User to check.')
+            .setDescription('User to ban.')
             .setRequired(true)
         )
         .addStringOption(opt =>
           opt
-            .setName('range')
-            .setDescription('Time range.')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Today', value: 'today' },
-              { name: 'This Week', value: 'week' },
-              { name: 'This Month', value: 'month' }
-            )
+            .setName('reason')
+            .setDescription('Reason.')
+            .setRequired(false)
         )
     )
     .addSubcommand(sub =>
       sub
-        .setName('top')
-        .setDescription('Top duty time performers.')
+        .setName('ungban')
+        .setDescription('Remove a user from global ban list.')
         .addStringOption(opt =>
           opt
-            .setName('range')
-            .setDescription('Time range.')
+            .setName('userid')
+            .setDescription('User ID to unban.')
             .setRequired(true)
-            .addChoices(
-              { name: 'Today', value: 'today' },
-              { name: 'This Week', value: 'week' },
-              { name: 'This Month', value: 'month' }
-            )
         )
-        .addStringOption(opt =>
-          opt
-            .setName('assignment')
-            .setDescription('Filter by assignment (optional).')
-            .setRequired(false)
-            .addChoices(
-              { name: 'Patrol', value: 'Patrol' },
-              { name: 'High Command', value: 'High Command' },
-              { name: 'Command', value: 'Command' },
-              { name: 'Traffic Unit', value: 'Traffic Unit' },
-              { name: 'Reaper', value: 'Reaper' },
-              { name: 'CID', value: 'CID' },
-              { name: 'IA', value: 'IA' },
-              { name: 'Supervisor', value: 'Supervisor' }
-            )
-        )
-    ),
-].map(cmd => cmd.toJSON());
+    )
+].map(c => c.toJSON());
+
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+  // Register as global application commands
+  await rest.put(
+    Routes.applicationCommands(DISCORD_CLIENT_ID),
+    { body: commands }
+  );
+
+  console.log('✅ Slash commands registered globally.');
+}
 
 // ---------------------------
-// Express / Admin setup
+// Utility
 // ---------------------------
+function msToHuman(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours <= 0 && minutes <= 0) return '0m';
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  return parts.join(' ');
+}
 
+function isAdmin(member, guildConfig) {
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  if (!guildConfig || !guildConfig.adminRoleIds) return false;
+  return guildConfig.adminRoleIds.some(id => member.roles.cache.has(id));
+}
+
+async function updateDutyBoardForGuild(guild) {
+  const cfg = getGuildConfig(guild.id);
+  if (!cfg.clockStatusChannelId) return;
+
+  const channel = await guild.channels.fetch(cfg.clockStatusChannelId).catch(() => null);
+  if (!channel || channel.type !== ChannelType.GuildText) return;
+
+  const sessions = getOpenSessions(guild.id);
+  if (sessions.length === 0) {
+    await channel.send('📋 **On Duty Board**\nNo one is currently on duty.').catch(() => {});
+    return;
+  }
+
+  const lines = await Promise.all(
+    sessions.map(async s => {
+      const user = await guild.members.fetch(s.userId).catch(() => null);
+      const name = user ? user.displayName : s.userId;
+      const started = `<t:${Math.floor(s.clockIn / 1000)}:R>`;
+      const elapsed = msToHuman(Date.now() - s.clockIn);
+      return `• **${name}** (<@${s.userId}>) – ${s.clockTypes.join(', ')} – on since ${started} (**${elapsed}**)`;
+    })
+  );
+
+  const content = '📋 **On Duty Board**\n' + lines.join('\n');
+  await channel.send(content).catch(() => {});
+}
+
+// ---------------------------
+// Discord events
+// ---------------------------
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  try {
+    await registerCommands();
+  } catch (err) {
+    console.error('❌ Error registering commands:', err);
+  }
+
+  // Initialize guild configs
+  client.guilds.cache.forEach(guild => {
+    const cfg = getGuildConfig(guild.id);
+    if (!cfg.name) {
+      cfg.name = guild.name;
+      updateGuildConfig(guild.id, cfg);
+    }
+  });
+});
+
+// Auto-kick globally banned users
+client.on('guildMemberAdd', member => {
+  if (isGloballyBanned(member.id)) {
+    member.kick('Globally banned by SALEA management bot.').catch(() => {});
+  }
+});
+
+client.on('interactionCreate', async interaction => {
+  if (interaction.isChatInputCommand()) {
+    const guild = interaction.guild;
+    if (!guild) return;
+    const cfg = getGuildConfig(guild.id);
+
+    // CLOCK
+    if (interaction.commandName === 'clock') {
+      const sub = interaction.options.getSubcommand();
+      const member = await guild.members.fetch(interaction.user.id);
+
+      if (sub === 'in') {
+        const typesRaw = interaction.options.getString('types');
+        const keys = typesRaw
+          .split(',')
+          .map(x => x.trim())
+          .filter(Boolean);
+
+        if (keys.length === 0) {
+          return interaction.reply({ content: '❌ No clock types specified.', ephemeral: true });
+        }
+
+        const knownKeys = cfg.clockTypes.map(ct => ct.key);
+        const invalid = keys.filter(k => !knownKeys.includes(k));
+        if (invalid.length > 0) {
+          return interaction.reply({
+            content: `❌ Invalid clock type(s): \`${invalid.join(', ')}\`.\nValid keys: \`${knownKeys.join(', ')}\``,
+            ephemeral: true
+          });
+        }
+
+        const session = clockIn(guild.id, interaction.user.id, keys);
+
+        // role handling
+        if (cfg.onDutyRoleId) {
+          await member.roles.add(cfg.onDutyRoleId).catch(() => {});
+        }
+
+        await interaction.reply({
+          content: `✅ Clocked in as: **${keys.join(', ')}**.`,
+          ephemeral: true
+        });
+
+        await updateDutyBoardForGuild(guild);
+      }
+
+      if (sub === 'out') {
+        const session = clockOut(guild.id, interaction.user.id);
+        if (!session) {
+          return interaction.reply({
+            content: '⚠️ You are not currently clocked in.',
+            ephemeral: true
+          });
+        }
+
+        const duration = session.clockOut - session.clockIn;
+
+        const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+        if (member && cfg.onDutyRoleId) {
+          await member.roles.remove(cfg.onDutyRoleId).catch(() => {});
+        }
+
+        await interaction.reply({
+          content: `✅ Clocked out. Session duration: **${msToHuman(duration)}**.`,
+          ephemeral: true
+        });
+
+        await updateDutyBoardForGuild(guild);
+      }
+
+      if (sub === 'status') {
+        const openSessions = getOpenSessions(guild.id).filter(
+          s => s.userId === interaction.user.id
+        );
+        if (openSessions.length === 0) {
+          return interaction.reply({
+            content: 'ℹ️ You are not currently on duty.',
+            ephemeral: true
+          });
+        }
+        const s = openSessions[0];
+        const elapsed = msToHuman(Date.now() - s.clockIn);
+        return interaction.reply({
+          content:
+            `⏱️ On duty as: **${s.clockTypes.join(', ')}**\n` +
+            `Started: <t:${Math.floor(s.clockIn / 1000)}:R>\n` +
+            `Elapsed: **${elapsed}**`,
+          ephemeral: true
+        });
+      }
+    }
+
+    // TICKET
+    if (interaction.commandName === 'ticket') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'close') {
+        const ticket = getTicketByChannel(guild.id, interaction.channelId);
+        if (!ticket) {
+          return interaction.reply({
+            content: '❌ This channel is not registered as a ticket.',
+            ephemeral: true
+          });
+        }
+
+        const member = await guild.members.fetch(interaction.user.id);
+        if (!isAdmin(member, cfg)) {
+          return interaction.reply({
+            content: '❌ You do not have permission to close tickets.',
+            ephemeral: true
+          });
+        }
+
+        closeTicket(ticket.id);
+
+        await interaction.reply('✅ Ticket closed. This channel will be deleted in 5 seconds.');
+        setTimeout(() => {
+          interaction.channel.delete('Ticket closed').catch(() => {});
+        }, 5000);
+      }
+    }
+
+    // APPLICATIONS
+    if (interaction.commandName === 'app') {
+      const sub = interaction.options.getSubcommand();
+      const member = await guild.members.fetch(interaction.user.id);
+      if (!isAdmin(member, cfg)) {
+        return interaction.reply({
+          content: '❌ You do not have permission to manage applications.',
+          ephemeral: true
+        });
+      }
+
+      if (sub === 'approve') {
+        const id = interaction.options.getString('id');
+        const app = getApplicationById(id);
+        if (!app || app.guildId !== guild.id) {
+          return interaction.reply({
+            content: '❌ Application not found for this guild.',
+            ephemeral: true
+          });
+        }
+
+        decideApplication(id, 'approved', interaction.user.id);
+
+        const typeCfg = cfg.applicationTypes.find(t => t.key === app.type);
+        const targetMember = await guild.members.fetch(app.userId).catch(() => null);
+
+        if (targetMember && typeCfg) {
+          if (typeCfg.addRoleIds && typeCfg.addRoleIds.length > 0) {
+            await targetMember.roles.add(typeCfg.addRoleIds).catch(() => {});
+          }
+          if (typeCfg.removeRoleIds && typeCfg.removeRoleIds.length > 0) {
+            await targetMember.roles.remove(typeCfg.removeRoleIds).catch(() => {});
+          }
+        }
+
+        await interaction.reply({
+          content: `✅ Application **${id}** approved.`,
+          ephemeral: true
+        });
+      }
+
+      if (sub === 'deny') {
+        const id = interaction.options.getString('id');
+        const reason = interaction.options.getString('reason');
+        const app = getApplicationById(id);
+        if (!app || app.guildId !== guild.id) {
+          return interaction.reply({
+            content: '❌ Application not found for this guild.',
+            ephemeral: true
+          });
+        }
+
+        decideApplication(id, 'denied', interaction.user.id);
+        await interaction.reply({
+          content: `✅ Application **${id}** denied.\nReason: ${reason}`,
+          ephemeral: true
+        });
+      }
+    }
+
+    // MOD / GLOBAL BAN
+    if (interaction.commandName === 'mod') {
+      const sub = interaction.options.getSubcommand();
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      if (!isAdmin(member, cfg)) {
+        return interaction.reply({
+          content: '❌ You do not have permission to run moderation commands.',
+          ephemeral: true
+        });
+      }
+
+      if (sub === 'gban') {
+        const user = interaction.options.getUser('user');
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+        addGlobalBan(user.id, reason, interaction.user.id);
+
+        // Kick from all mutual guilds
+        client.guilds.cache.forEach(g => {
+          g.members.fetch(user.id).then(m => {
+            m.kick(`Globally banned: ${reason}`).catch(() => {});
+          }).catch(() => {});
+        });
+
+        await interaction.reply({
+          content: `✅ Globally banned **${user.tag}** (${user.id}).`,
+          ephemeral: true
+        });
+      }
+
+      if (sub === 'ungban') {
+        const userId = interaction.options.getString('userid');
+        removeGlobalBan(userId);
+        await interaction.reply({
+          content: `✅ Removed global ban for user ID **${userId}**.`,
+          ephemeral: true
+        });
+      }
+    }
+  }
+
+  // BUTTONS (Panels)
+  if (interaction.isButton()) {
+    const [kind, guildId, typeKey] = interaction.customId.split(':');
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      return interaction.reply({ content: '❌ Guild no longer available.', ephemeral: true });
+    }
+    const cfg = getGuildConfig(guildId);
+
+    // Ticket panel button
+    if (kind === 'ticket') {
+      const typeCfg = cfg.ticketTypes.find(t => t.key === typeKey);
+      if (!typeCfg) {
+        return interaction.reply({ content: '❌ Ticket type not configured.', ephemeral: true });
+      }
+
+      const baseName = `ticket-${typeKey}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '');
+      const channel = await guild.channels.create({
+        name: baseName.substring(0, 90),
+        type: ChannelType.GuildText,
+        topic: `Ticket type: ${typeCfg.label} | User: ${interaction.user.tag}`
+      });
+
+      const ticket = createTicket({
+        guildId,
+        channelId: channel.id,
+        userId: interaction.user.id,
+        type: typeKey
+      });
+
+      // ping roles
+      const pings = (typeCfg.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Ticket - ${typeCfg.label}`)
+        .setDescription(typeCfg.template || 'A staff member will be with you shortly.')
+        .addFields(
+          { name: 'User', value: `<@${interaction.user.id}>`, inline: true },
+          { name: 'Ticket ID', value: ticket.id, inline: true }
+        )
+        .setTimestamp(new Date());
+
+      await channel.send({
+        content: pings || undefined,
+        embeds: [embed]
+      });
+
+      await interaction.reply({
+        content: `✅ Ticket created: ${channel}`,
+        ephemeral: true
+      });
+    }
+
+    // Application panel button
+    if (kind === 'app') {
+      const typeCfg = cfg.applicationTypes.find(t => t.key === typeKey);
+      if (!typeCfg) {
+        return interaction.reply({ content: '❌ Application type not configured.', ephemeral: true });
+      }
+
+      // For simplicity v1: collect answers via DM-style prompt in the admin panel only.
+      // Here we just create a stub application and tell user to complete via admin workflow.
+
+      const app = createApplication({
+        guildId,
+        userId: interaction.user.id,
+        type: typeKey,
+        answers: {},
+        roleAddIds: typeCfg.addRoleIds || [],
+        roleRemoveIds: typeCfg.removeRoleIds || []
+      });
+
+      const pingText = (typeCfg.pingRoleIds || []).map(id => `<@&${id}>`).join(' ');
+
+      // Log to a channel if configured
+      if (cfg.applicationPanelChannelId) {
+        const ch = await guild.channels.fetch(cfg.applicationPanelChannelId).catch(() => null);
+        if (ch && ch.isTextBased()) {
+          const embed = new EmbedBuilder()
+            .setTitle(`New Application Started - ${typeCfg.label}`)
+            .setDescription(`User: <@${interaction.user.id}>\nApplication ID: \`${app.id}\``)
+            .setTimestamp(new Date());
+          await ch.send({ content: pingText || undefined, embeds: [embed] }).catch(() => {});
+        }
+      }
+
+      await interaction.reply({
+        content: `✅ Application **${typeCfg.label}** started.\nA staff member will complete review via the admin panel.`,
+        ephemeral: true
+      });
+    }
+  }
+});
+
+// ---------------------------
+// Express admin backend
+// ---------------------------
 const app = express();
-const PORT = process.env.PORT || 10000;
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: false }));
 
 app.use(
   session({
-    secret: process.env.ADMIN_SESSION_SECRET || 'salea-secret',
+    secret: SESSION_SECRET,
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: false
   })
 );
 
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Passport serialization
-passport.serializeUser((user, done) => {
-  done(null, {
-    id: user.id,
-    username: user.username,
-    discriminator: user.discriminator,
-    avatar: user.avatar,
-  });
-});
-
-passport.deserializeUser((obj, done) => {
-  done(null, obj);
-});
-
-// OAuth2 Strategy for Discord
-const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
-const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-const CALLBACK_URL =
-  process.env.DISCORD_CALLBACK_URL ||
-  'https://salea-management-bot.onrender.com/auth/discord/callback';
+// Passport Discord
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
 
 passport.use(
   new DiscordStrategy(
     {
-      clientID: process.env.DISCORD_CLIENT_ID,
-      clientSecret: process.env.DISCORD_CLIENT_SECRET,
+      clientID: DISCORD_CLIENT_ID,
+      clientSecret: DISCORD_CLIENT_SECRET,
       callbackURL: CALLBACK_URL,
-      scope: ['identify', 'guilds'],
+      scope: ['identify', 'guilds']
     },
-    async (accessToken, refreshToken, profile, done) => {
-      try {
-       const resp = await fetch('https://discord.com/api/users/@me', {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-        if (!resp.ok) {
-        return done(null, { id: profile.id, username: profile.username });
-      } catch (err) {
-        console.error('OAuth verify error:', err);
-        return done(err);
-      }
+    (accessToken, refreshToken, profile, done) => {
+      const user = {
+        id: profile.id,
+        username: profile.username,
+        guilds: profile.guilds || []
+      };
+      return done(null, user);
     }
   )
 );
 
-// Simple auth guard
-function ensureAuthenticated(req, res, next) {
-  if (req.isAuthenticated && req.isAuthenticated()) {
-    return next();
-  }
-  res.status(401).json({ error: 'Not authenticated' });
-}
-
-// Static admin UI
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Admin home -> admin.html
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
-
-// OAuth routes
-app.get(
-  '/auth/discord',
-  passport.authenticate('discord', { prompt: 'consent' })
-);
+// Auth routes
+app.get('/auth/discord', passport.authenticate('discord'));
 
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', {
-    failureRedirect: '/admin',
+    failureRedirect: '/auth/failure'
   }),
   (req, res) => {
     res.redirect('/admin');
   }
 );
 
-app.get('/logout', (req, res, next) => {
-  req.logout(err => {
-    if (err) return next(err);
-    req.session.destroy(() => {
-      res.redirect('/admin');
-    });
+app.get('/auth/failure', (req, res) => {
+  res.status(401).send('Discord authentication failed.');
+});
+
+// Middleware
+function ensureAuth(req, res, next) {
+  if (req.isAuthenticated()) return next();
+  res.redirect('/auth/discord');
+}
+
+function canManageGuild(user, guildId) {
+  if (!user || !user.guilds) return false;
+  const g = user.guilds.find(g => g.id === guildId);
+  if (!g) return false;
+  const perms = BigInt(g.permissions || '0');
+  const ADMINISTRATOR = BigInt(0x0000000000000008);
+  return (perms & ADMINISTRATOR) === ADMINISTRATOR;
+}
+
+// Static admin UI
+app.use('/public', express.static('public'));
+
+// Admin page
+app.get('/admin', ensureAuth, (req, res) => {
+  res.sendFile(require('path').join(__dirname, 'public', 'admin.html'));
+});
+
+// API: current user
+app.get('/api/me', ensureAuth, (req, res) => {
+  res.json({ id: req.user.id, username: req.user.username, guilds: req.user.guilds || [] });
+});
+
+// API: list manageable guilds (where user is admin)
+app.get('/api/guilds', ensureAuth, (req, res) => {
+  const manageable = (req.user.guilds || []).filter(g => {
+    const perms = BigInt(g.permissions || '0');
+    const ADMINISTRATOR = BigInt(0x0000000000000008);
+    return (perms & ADMINISTRATOR) === ADMINISTRATOR;
+  });
+  res.json(manageable);
+});
+
+// API: get guild config
+app.get('/api/guilds/:guildId/config', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const cfg = getGuildConfig(guildId);
+  res.json(cfg);
+});
+
+// API: update guild config (clock types, panel channels, admin roles, etc.)
+app.post('/api/guilds/:guildId/config', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const patch = req.body || {};
+  const updated = updateGuildConfig(guildId, patch);
+  res.json(updated);
+});
+
+// API: tickets
+app.get('/api/guilds/:guildId/tickets', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const status = req.query.status || null;
+  const list = listTickets(guildId, { status });
+  res.json(list);
+});
+
+// API: applications
+app.get('/api/guilds/:guildId/applications', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const status = req.query.status || null;
+  const list = listApplications(guildId, { status });
+  res.json(list);
+});
+
+app.post('/api/guilds/:guildId/applications/:id/decision', ensureAuth, async (req, res) => {
+  const guildId = req.params.guildId;
+  const id = req.params.id;
+  const { status } = req.body;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  if (!['approved', 'denied'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+
+  const appRec = decideApplication(id, status, req.user.id);
+  if (!appRec) return res.status(404).json({ error: 'Application not found' });
+
+  // Try to apply roles if approved
+  if (status === 'approved') {
+    const cfg = getGuildConfig(guildId);
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      const typeCfg = cfg.applicationTypes.find(t => t.key === appRec.type);
+      if (typeCfg) {
+        const member = await guild.members.fetch(appRec.userId).catch(() => null);
+        if (member) {
+          if (typeCfg.addRoleIds && typeCfg.addRoleIds.length > 0) {
+            await member.roles.add(typeCfg.addRoleIds).catch(() => {});
+          }
+          if (typeCfg.removeRoleIds && typeCfg.removeRoleIds.length > 0) {
+            await member.roles.remove(typeCfg.removeRoleIds).catch(() => {});
+          }
+        }
+      }
+    }
+  }
+
+  res.json(appRec);
+});
+
+// API: duty sessions (live board + reports)
+app.get('/api/guilds/:guildId/duty/live', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+  const sessions = getOpenSessions(guildId);
+  res.json(sessions);
+});
+
+// Simple range: today, week, month
+function getRangeStart(range) {
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  if (range === 'today') {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+  if (range === 'week') return now - 7 * day;
+  if (range === 'month') return now - 30 * day;
+  return 0;
+}
+
+app.get('/api/guilds/:guildId/duty/report', ensureAuth, (req, res) => {
+  const guildId = req.params.guildId;
+  const range = req.query.range || 'week';
+  const clockTypeKey = req.query.clockType || null;
+  if (!canManageGuild(req.user, guildId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const from = getRangeStart(range);
+  const sessions = getSessionsInRange(guildId, from, clockTypeKey);
+
+  const totals = {};
+  sessions.forEach(s => {
+    const dur = s.clockOut - s.clockIn;
+    if (!totals[s.userId]) totals[s.userId] = 0;
+    totals[s.userId] += dur;
+  });
+
+  res.json({ range, clockTypeKey, totals });
+});
+
+// API: global bans
+app.get('/api/global-bans', ensureAuth, (req, res) => {
+  res.json(listGlobalBans());
+});
+
+// Admin logout
+app.post('/api/logout', ensureAuth, (req, res) => {
+  req.logout(() => {
+    res.json({ ok: true });
   });
 });
 
-// ---------------------------
-// Admin API
-// ---------------------------
-
-app.get('/api/me', ensureAuthenticated, async (req, res) => {
-  try {
-    if (!clientReady) {
-      return res.status(503).json({ error: 'Bot not ready' });
-    }
-
-    const userId = req.user.id;
-    const session = req.session || {};
-    const activeGuildId = session.activeGuildId || null;
-
-    const adminGuilds = [];
-    const promises = [];
-
-    for (const [guildId, guild] of client.guilds.cache) {
-      promises.push(
-        guild.members
-          .fetch(userId)
-          .then(member => {
-            if (isGuildAdminMember(member, guildId)) {
-              const cfg = getGuildConfig(guildId);
-              adminGuilds.push({
-                id: guildId,
-                name: guild.name,
-                adminRoleIds: cfg.adminRoleIds || [],
-              });
-            }
-          })
-          .catch(() => {})
-      );
-    }
-
-    await Promise.all(promises);
-
-    if (!session.activeGuildId && adminGuilds.length > 0) {
-      session.activeGuildId = adminGuilds[0].id;
-    }
-
-    res.json({
-      user: req.user,
-      adminGuilds,
-      activeGuildId: session.activeGuildId || null,
-    });
-  } catch (err) {
-    console.error('/api/me error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.get('/api/guilds', ensureAuthenticated, async (req, res) => {
-  try {
-    if (!clientReady) {
-      return res.status(503).json({ error: 'Bot not ready' });
-    }
-    const userId = req.user.id;
-    const session = req.session || {};
-    const activeGuildId = session.activeGuildId || null;
-
-    const result = [];
-    const adminGuilds = [];
-
-    for (const [guildId, guild] of client.guilds.cache) {
-      let member = null;
-      try {
-        member = await guild.members.fetch(userId);
-      } catch {
-        // not in guild
-      }
-      const cfg = getGuildConfig(guildId);
-      const isAdmin = member ? isGuildAdminMember(member, guildId) : false;
-      if (isAdmin) {
-        adminGuilds.push(guildId);
-      }
-
-      result.push({
-        id: guildId,
-        name: guild.name,
-        isAdminGuild: isAdmin,
-        adminRoleIds: cfg.adminRoleIds || [],
-        roles: member
-          ? guild.roles.cache
-              .filter(r => r.editable || r.name === '--High Command--')
-              .map(r => ({ id: r.id, name: r.name }))
-          : guild.roles.cache.map(r => ({ id: r.id, name: r.name })),
-      });
-    }
-
-    if (!session.activeGuildId && adminGuilds.length > 0) {
-      session.activeGuildId = adminGuilds[0];
-    }
-
-    res.json(
-      result.filter(g => adminGuilds.includes(g.id))
-    );
-  } catch (err) {
-    console.error('/api/guilds error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.post('/api/select-guild', ensureAuthenticated, (req, res) => {
-  const { guildId } = req.body || {};
-  if (!guildId) {
-    return res.status(400).json({ error: 'guildId required' });
-  }
-  const session = req.session || {};
-  session.activeGuildId = guildId;
-  res.json({ ok: true, activeGuildId: guildId });
-});
-
-app.get('/api/guilds/:guildId/admin-roles', ensureAuthenticated, (req, res) => {
-  try {
-    const { guildId } = req.params;
-    const cfg = getGuildConfig(guildId);
-    res.json({ adminRoleIds: cfg.adminRoleIds || [] });
-  } catch (err) {
-    console.error('GET admin-roles error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.post('/api/guilds/:guildId/admin-roles', ensureAuthenticated, (req, res) => {
-  try {
-    const { guildId } = req.params;
-    const { roleIds } = req.body || {};
-    const cfg = setGuildAdminRoles(guildId, Array.isArray(roleIds) ? roleIds : []);
-    res.json({ adminRoleIds: cfg.adminRoleIds || [] });
-  } catch (err) {
-    console.error('POST admin-roles error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Features
-app.get('/api/guilds/:guildId/features', ensureAuthenticated, (req, res) => {
-  try {
-    const { guildId } = req.params;
-    const features = getGuildFeatures(guildId);
-    res.json(features);
-  } catch (err) {
-    console.error('GET features error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.post('/api/guilds/:guildId/features', ensureAuthenticated, (req, res) => {
-  try {
-    const { guildId } = req.params;
-    const update = req.body || {};
-    const features = setGuildFeatures(guildId, update);
-    res.json(features);
-  } catch (err) {
-    console.error('POST features error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Start admin server
+// Start server
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🌐 Admin dashboard listening on port ${PORT}`);
-  console.log(`🌐 Using Discord OAuth callback URL: ${DISCORD_CALLBACK_URL}`);
 });
 
-// ---------------------------
-// Discord client events
-// ---------------------------
-
-client.once(Events.ClientReady, async readyClient => {
-  clientReady = true;
-  console.log(`✅ Logged in as ${readyClient.user.tag}`);
-
-  // Register commands globally for all guilds the bot is in
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  try {
-    console.log('🔁 Refreshing application (slash) commands...');
-    await rest.put(
-      Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
-      { body: commands }
-    );
-    console.log('✅ Slash commands registered.');
-  } catch (error) {
-    console.error('❌ Error registering commands:', error);
-  }
-
-  // Try to update duty board for each guild on ready
-  for (const [, guild] of client.guilds.cache) {
-    try {
-      await updateDutyBoard(guild);
-    } catch (err) {
-      console.error('[DutyBoard] Failed to update on ready:', err);
-    }
-  }
-});
-
-// Setup Wizard on guild join
-client.on('guildCreate', async guild => {
-  console.log(`[SetupWizard] Joined new guild: ${guild.name} (${guild.id})`);
-
-  // Ensure config exists
-  const cfg = getOrCreateGuildConfig(guild.id);
-  const features = cfg.features || getGuildFeatures(guild.id);
-  if (features.autoPanels === false) {
-    return;
-  }
-
-  let targetChannel = guild.systemChannel || null;
-  if (!targetChannel) {
-    targetChannel = guild.channels.cache
-      .filter(ch => ch.isTextBased() && ch.viewable && ch.type === ChannelType.GuildText)
-      .sort((a, b) => a.position - b.position)
-      .first();
-  }
-
-  if (!targetChannel) {
-    console.warn(`[SetupWizard] No suitable channel found for guild ${guild.id}`);
-    return;
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('SALEA Bot Setup Wizard')
-    .setDescription(
-      'Thanks for adding the SALEA Management Bot.\n\n' +
-      'Use the buttons below to quickly set up core panels for this guild:\n' +
-      '• **Application Panel** – for recruits to apply\n' +
-      '• **Ticket Panel** – for support / IA / training tickets\n' +
-      '• **Admin Dashboard** – configure channels, pings, & features'
-    )
-    .setColor(0x2563eb);
-
-  const adminUrl =
-    process.env.ADMIN_BASE_URL ||
-    'https://salea-management-bot.onrender.com/admin';
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('setup_create_app_panel')
-      .setLabel('Create Application Panel')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId('setup_create_ticket_panel')
-      .setLabel('Create Ticket Info')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('setup_open_admin')
-      .setLabel('Open Admin Dashboard')
-      .setStyle(ButtonStyle.Link)
-      .setURL(adminUrl)
-  );
-
-  try {
-    await targetChannel.send({ embeds: [embed], components: [row] });
-    console.log(`[SetupWizard] Posted setup panel in #${targetChannel.name} (${targetChannel.id})`);
-  } catch (err) {
-    console.error('[SetupWizard] Failed to send setup wizard message:', err);
-  }
-});
-
-// Interactions
-client.on(Events.InteractionCreate, async interaction => {
-  try {
-    // Slash commands
-    if (interaction.isChatInputCommand()) {
-      const { commandName } = interaction;
-      const guildId = interaction.guildId;
-      const features = guildId ? getGuildFeatures(guildId) : null;
-
-      // /setup-app-panel
-      if (commandName === 'setup-app-panel') {
-        if (features && features.applications === false) {
-          return interaction.reply({
-            content: '❌ Applications are currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (!isGuildAdminMember(member, guildId)) {
-          return interaction.reply({
-            content: '❌ You do not have permission to use this.',
-            ephemeral: true,
-          });
-        }
-
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('apply_patrol')
-            .setLabel('Apply - Patrol')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('apply_cid')
-            .setLabel('Apply - CID')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_srt')
-            .setLabel('Apply - SRT')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_traffic')
-            .setLabel('Apply - Traffic Unit')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_reaper')
-            .setLabel('Apply - Reaper')
-            .setStyle(ButtonStyle.Secondary)
-        );
-
-        const row2 = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('apply_ia')
-            .setLabel('Apply - IA')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId('apply_dispatch')
-            .setLabel('Apply - Dispatch')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('apply_training')
-            .setLabel('Apply - Training Staff')
-            .setStyle(ButtonStyle.Secondary)
-        );
-
-        const embed = new EmbedBuilder()
-          .setTitle('SALEA Applications')
-          .setDescription(
-            'Click the appropriate button below to submit an application.\n\n' +
-            'Please be honest and detailed in your responses.'
-          )
-          .setColor(0x00aeff);
-
-        await interaction.channel.send({ embeds: [embed], components: [row, row2] });
-
-        const cfg = getGuildConfig(guildId);
-        cfg.appPanelChannelId = interaction.channel.id;
-        saveGuildConfig(cfg);
-
-        return interaction.reply({
-          content: '✅ Application panel posted.',
-          ephemeral: true,
-        });
-      }
-
-      // /app
-      if (commandName === 'app') {
-        if (features && features.applications === false) {
-          return interaction.reply({
-            content: '❌ Applications are currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const sub = interaction.options.getSubcommand();
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-
-        if (!isGuildAdminMember(member, guildId)) {
-          return interaction.reply({
-            content: '❌ Only High Command / Admin may manage applications.',
-            ephemeral: true,
-          });
-        }
-
-        if (sub === 'approve') {
-          const user = interaction.options.getUser('user');
-          const division = interaction.options.getString('division');
-          const guildMember = await interaction.guild.members.fetch(user.id);
-
-          const latestApp = getLatestApplicationForUser(user.id);
-          const appRecord = latestApp
-            ? updateApplicationStatus(latestApp.id, 'approved', interaction.user.id, division)
-            : null;
-
-          const cfg = getGuildConfig(guildId);
-          const applicantRoleId = cfg.applicantRoleId || null;
-          const cadetRoleId = cfg.cadetRoleId || (cfg.roles?.cadetRoleId ?? null);
-
-          if (applicantRoleId && guildMember.roles.cache.has(applicantRoleId)) {
-            await guildMember.roles.remove(applicantRoleId).catch(() => {});
-          }
-          if (cadetRoleId) {
-            await guildMember.roles.add(cadetRoleId).catch(() => {});
-          }
-
-          try {
-            await user.send(
-              `✅ Your application to SALEA (**${division}**) has been **approved**. ` +
-              `Welcome aboard as a Cadet!`
-            );
-          } catch {}
-
-          const embed = new EmbedBuilder()
-            .setTitle('Application Approved')
-            .setColor(0x00ff00)
-            .addFields(
-              { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
-              { name: 'Division', value: division, inline: true },
-              { name: 'Approved By', value: `<@${interaction.user.id}>`, inline: true }
-            )
-            .setTimestamp(new Date());
-
-          if (appRecord) {
-            embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-          }
-
-          try {
-            const logChannelId = cfg.applicationsChannelId || cfg.channels?.applicationsChannelId;
-            if (logChannelId) {
-              const channel = await interaction.client.channels.fetch(logChannelId);
-              if (channel && channel.isTextBased()) {
-                await channel.send({ embeds: [embed] });
-              }
-            }
-          } catch (err) {
-            console.error('Error logging application approval:', err);
-          }
-
-          return interaction.reply({
-            content: `✅ Approved application for ${user} into **${division}**.`,
-            ephemeral: true,
-          });
-        }
-
-        if (sub === 'deny') {
-          const user = interaction.options.getUser('user');
-          const reason = interaction.options.getString('reason');
-
-          const latestApp = getLatestApplicationForUser(user.id);
-          const appRecord = latestApp
-            ? updateApplicationStatus(latestApp.id, 'denied', interaction.user.id, reason)
-            : null;
-
-          try {
-            await user.send(
-              `❌ Your application to SALEA has been **denied**.\n` +
-              `Reason: ${reason}`
-            );
-          } catch {}
-
-          const embed = new EmbedBuilder()
-            .setTitle('Application Denied')
-            .setColor(0xff0000)
-            .addFields(
-              { name: 'Applicant', value: `<@${user.id}> (${user.id})`, inline: false },
-              { name: 'Denied By', value: `<@${interaction.user.id}>`, inline: true },
-              { name: 'Reason', value: reason, inline: false }
-            )
-            .setTimestamp(new Date());
-
-          if (appRecord) {
-            embed.setFooter({ text: `Application ID: ${appRecord.id}` });
-          }
-
-          try {
-            const cfg = getGuildConfig(guildId);
-            const logChannelId = cfg.applicationsChannelId || cfg.channels?.applicationsChannelId;
-            if (logChannelId) {
-              const channel = await interaction.client.channels.fetch(logChannelId);
-              if (channel && channel.isTextBased()) {
-                await channel.send({ embeds: [embed] });
-              }
-            }
-          } catch (err) {
-            console.error('Error logging application denial:', err);
-          }
-
-          return interaction.reply({
-            content: `✅ Denied application for ${user}.`,
-            ephemeral: true,
-          });
-        }
-      }
-
-      // /ticket
-      if (commandName === 'ticket') {
-        if (features && features.tickets === false) {
-          return interaction.reply({
-            content: '❌ Tickets are currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const sub = interaction.options.getSubcommand();
-
-        if (sub === 'open') {
-          const type = interaction.options.getString('type');
-          const subject = interaction.options.getString('subject');
-          const guild = interaction.guild;
-
-          const cfg = getGuildConfig(guildId);
-
-          let categoryId = null;
-          if (type === 'general') categoryId = cfg.ticketGeneralCategoryId || cfg.categories?.ticketGeneralCategoryId;
-          if (type === 'ia') categoryId = cfg.ticketIACategoryId || cfg.categories?.ticketIACategoryId;
-          if (type === 'training') categoryId = cfg.ticketTrainingCategoryId || cfg.categories?.ticketTrainingCategoryId;
-          if (type === 'tech') categoryId = cfg.ticketTechCategoryId || cfg.categories?.ticketTechCategoryId;
-
-          const parent = categoryId ? guild.channels.cache.get(categoryId) : null;
-
-          const overwrites = [
-            {
-              id: guild.roles.everyone.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              id: interaction.user.id,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory,
-              ],
-            },
-          ];
-
-          const staffRoleId = cfg.staffRoleId || cfg.roles?.staffRoleId;
-          const iaRoleId = cfg.iaRoleId || cfg.roles?.iaRoleId;
-
-          if (staffRoleId) {
-            overwrites.push({
-              id: staffRoleId,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory,
-                PermissionFlagsBits.ManageMessages,
-              ],
-            });
-          }
-          if (type === 'ia' && iaRoleId) {
-            overwrites.push({
-              id: iaRoleId,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory,
-              ],
-            });
-          }
-
-          const baseName =
-            type === 'ia'
-              ? 'ia'
-              : type === 'training'
-              ? 'training'
-              : type === 'tech'
-              ? 'tech'
-              : 'ticket';
-
-          const channelName = `${baseName}-${interaction.user.username.toLowerCase()}`.replace(
-            /[^a-z0-9\-]/g,
-            ''
-          );
-
-          const ticketChannel = await guild.channels.create({
-            name: channelName || 'ticket',
-            type: ChannelType.GuildText,
-            parent: parent || undefined,
-            permissionOverwrites: overwrites,
-            topic: `Ticket for ${interaction.user.tag} | Type: ${type} | Subject: ${subject}`,
-          });
-
-          addTicket({
-            guildId,
-            channelId: ticketChannel.id,
-            userId: interaction.user.id,
-            type,
-            subject,
-            createdAt: Date.now(),
-            closedAt: null,
-          });
-
-          await interaction.reply({
-            content: `✅ Ticket created: ${ticketChannel}`,
-            ephemeral: true,
-          });
-
-          await ticketChannel.send(
-            `👋 Hello ${interaction.user}, a staff member will be with you shortly.\n` +
-              `**Type:** ${type}\n**Subject:** ${subject}`
-          );
-        }
-
-        if (sub === 'close') {
-          const channel = interaction.channel;
-          const cfg = getGuildConfig(guildId);
-
-          const validCategories = [
-            cfg.ticketGeneralCategoryId || cfg.categories?.ticketGeneralCategoryId,
-            cfg.ticketIACategoryId || cfg.categories?.ticketIACategoryId,
-            cfg.ticketTrainingCategoryId || cfg.categories?.ticketTrainingCategoryId,
-            cfg.ticketTechCategoryId || cfg.categories?.ticketTechCategoryId,
-          ].filter(Boolean);
-
-          if (!validCategories.includes(channel.parentId)) {
-            return interaction.reply({
-              content: '❌ This command can only be used inside a ticket channel.',
-              ephemeral: true,
-            });
-          }
-
-          const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-          const staffRoleId = cfg.staffRoleId || cfg.roles?.staffRoleId;
-          const isStaff =
-            member &&
-            (member.permissions.has(PermissionFlagsBits.ManageChannels) ||
-              (staffRoleId && member.roles.cache.has(staffRoleId)) ||
-              isGuildAdminMember(member, guildId));
-
-          if (!isStaff) {
-            return interaction.reply({
-              content: '❌ Only staff can close tickets.',
-              ephemeral: true,
-            });
-          }
-
-          const ticket = closeTicket(channel.id);
-
-          const messages = await channel.messages.fetch({ limit: 100 });
-          const sorted = [...messages.values()].sort(
-            (a, b) => a.createdTimestamp - b.createdTimestamp
-          );
-          const lines = sorted.map(
-            m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content}`
-          );
-
-          const transcriptText =
-            lines.length > 0 ? lines.join('\n') : 'No messages recorded in this ticket.';
-          const buffer = Buffer.from(transcriptText, 'utf8');
-          const attachment = new AttachmentBuilder(buffer, {
-            name: `ticket-${channel.id}.txt`,
-          });
-
-          try {
-            const logChannelId =
-              cfg.ticketTranscriptChannelId || cfg.channels?.ticketTranscriptChannelId;
-            if (logChannelId) {
-              const logChannel = await interaction.client.channels.fetch(logChannelId);
-              if (logChannel && logChannel.isTextBased()) {
-                const embed = new EmbedBuilder()
-                  .setTitle('Ticket Closed')
-                  .setColor(0xffa500)
-                  .addFields(
-                    { name: 'Channel', value: `#${channel.name} (${channel.id})`, inline: false },
-                    {
-                      name: 'Closed By',
-                      value: `<@${interaction.user.id}>`,
-                      inline: true,
-                    },
-                    {
-                      name: 'Original User',
-                      value: ticket ? `<@${ticket.userId}>` : 'Unknown',
-                      inline: true,
-                    }
-                  )
-                  .setTimestamp(new Date());
-
-                await logChannel.send({ embeds: [embed], files: [attachment] });
-              }
-            }
-          } catch (err) {
-            console.error('Error sending ticket transcript:', err);
-          }
-
-          await interaction.reply('✅ Closing this ticket in 5 seconds...');
-          setTimeout(() => {
-            channel.delete('Ticket closed by staff.').catch(console.error);
-          }, 5000);
-        }
-      }
-
-      // /clock
-      if (commandName === 'clock') {
-        if (features && features.clock === false) {
-          return interaction.reply({
-            content: '❌ Duty clock is currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const sub = interaction.options.getSubcommand();
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-
-        const cfg = getGuildConfig(guildId);
-        const swornRoles = cfg.swornRoleIds || cfg.roles?.swornRoleIds || [];
-        const isSworn = hasAnyRole(member, swornRoles);
-        if (!isSworn) {
-          return interaction.reply({
-            content: '❌ Only sworn personnel may use the duty clock.',
-            ephemeral: true,
-          });
-        }
-
-        if (sub === 'in') {
-          const assignment = interaction.options.getString('assignment');
-
-          const open = getOpenSession(interaction.user.id, guildId);
-          if (open) {
-            return interaction.reply({
-              content: '⚠️ You are already clocked in.',
-              ephemeral: true,
-            });
-          }
-
-          const session = clockIn(interaction.user.id, assignment, guildId);
-          if (!session) {
-            return interaction.reply({
-              content: '⚠️ Could not clock you in (already in session?).',
-              ephemeral: true,
-            });
-          }
-
-          await interaction.reply({
-            content: `✅ You are now clocked in as **${assignment}**.`,
-            ephemeral: true,
-          });
-
-          await updateDutyBoard(interaction.guild);
-        }
-
-        if (sub === 'out') {
-          const session = clockOut(interaction.user.id, guildId);
-          if (!session) {
-            return interaction.reply({
-              content: '⚠️ You do not have an active clock-in session.',
-              ephemeral: true,
-            });
-          }
-
-          const duration = session.clockOut - session.clockIn;
-          await interaction.reply({
-            content: `✅ You are now clocked out. Session duration: **${msToHuman(
-              duration
-            )}**.`,
-            ephemeral: true,
-          });
-
-          await updateDutyBoard(interaction.guild);
-        }
-
-        if (sub === 'status') {
-          const open = getOpenSession(interaction.user.id, guildId);
-          if (!open) {
-            return interaction.reply({
-              content: 'ℹ️ You are currently **not** clocked in.',
-              ephemeral: true,
-            });
-          }
-
-          const duration = Date.now() - open.clockIn;
-          const unitText = open.assignment ? `Assignment: **${open.assignment}**\n` : '';
-          await interaction.reply({
-            content:
-              `⏱️ You are currently clocked in.\n${unitText}` +
-              `Started: <t:${Math.floor(open.clockIn / 1000)}:R>\n` +
-              `Elapsed: **${msToHuman(duration)}**`,
-            ephemeral: true,
-          });
-        }
-      }
-
-      // /activity
-      if (commandName === 'activity') {
-        const sub = interaction.options.getSubcommand();
-
-        if (sub === 'self') {
-          const range = interaction.options.getString('range');
-          const from = getRangeStart(range);
-          const sessions = getSessionsForUserInRange(interaction.user.id, guildId, from);
-          const totalMs = sessions.reduce(
-            (sum, s) => sum + (s.clockOut - s.clockIn),
-            0
-          );
-
-          return interaction.reply({
-            content:
-              `📊 Activity for <@${interaction.user.id}> (${range}):\n` +
-              `Total duty time: **${msToHuman(totalMs)}**\n` +
-              `Completed sessions: **${sessions.length}**`,
-            ephemeral: true,
-          });
-        }
-
-        if (sub === 'member') {
-          const range = interaction.options.getString('range');
-          const user = interaction.options.getUser('user');
-
-          const member = await interaction.guild.members.fetch(interaction.user.id);
-          if (!isGuildAdminMember(member, guildId)) {
-            return interaction.reply({
-              content: '❌ Only High Command may view other members\' activity.',
-              ephemeral: true,
-            });
-          }
-
-          const from = getRangeStart(range);
-          const sessions = getSessionsForUserInRange(user.id, guildId, from);
-          const totalMs = sessions.reduce(
-            (sum, s) => sum + (s.clockOut - s.clockIn),
-            0
-          );
-
-          return interaction.reply({
-            content:
-              `📊 Activity for <@${user.id}> (${range}):\n` +
-              `Total duty time: **${msToHuman(totalMs)}**\n` +
-              `Completed sessions: **${sessions.length}**`,
-            ephemeral: true,
-          });
-        }
-
-        if (sub === 'top') {
-          const range = interaction.options.getString('range');
-          const assignment = interaction.options.getString('assignment') || null;
-
-          const member = await interaction.guild.members.fetch(interaction.user.id);
-          if (!isGuildAdminMember(member, guildId)) {
-            return interaction.reply({
-              content: '❌ Only High Command may view top activity.',
-              ephemeral: true,
-            });
-          }
-
-          const from = getRangeStart(range);
-          const sessions = getSessionsInRange(guildId, from, assignment);
-
-          const totals = {};
-          for (const s of sessions) {
-            if (!totals[s.userId]) totals[s.userId] = 0;
-            totals[s.userId] += s.clockOut - s.clockIn;
-          }
-
-          const sorted = Object.entries(totals)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 10);
-
-          if (sorted.length === 0) {
-            return interaction.reply({
-              content: 'ℹ️ No duty sessions found for that range.',
-              ephemeral: true,
-            });
-          }
-
-          const lines = await Promise.all(
-            sorted.map(async ([userId, ms], idx) => {
-              return `${idx + 1}. <@${userId}> – **${msToHuman(ms)}**`;
-            })
-          );
-
-          const header = assignment
-            ? `Top duty time (${range}) for assignment **${assignment}**:`
-            : `Top duty time (${range}):`;
-
-          return interaction.reply({
-            content: `📊 ${header}\n` + lines.join('\n'),
-            ephemeral: true,
-          });
-        }
-      }
-    }
-
-    // Button interactions (Setup Wizard + Apply buttons)
-    if (interaction.isButton()) {
-      const id = interaction.customId;
-
-      // Setup Wizard buttons
-      if (id === 'setup_create_app_panel') {
-        const guildId = interaction.guildId;
-        const cfg = getGuildConfig(guildId);
-        const features = cfg.features || getGuildFeatures(guildId);
-        if (features.applications === false) {
-          return interaction.reply({
-            content: '❌ Applications are currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (!isGuildAdminMember(member, guildId)) {
-          return interaction.reply({
-            content: '❌ Only High Command / Admin can run the setup wizard.',
-            ephemeral: true,
-          });
-        }
-
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('apply_patrol')
-            .setLabel('Apply - Patrol')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('apply_cid')
-            .setLabel('Apply - CID')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_srt')
-            .setLabel('Apply - SRT')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_traffic')
-            .setLabel('Apply - Traffic Unit')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('apply_reaper')
-            .setLabel('Apply - Reaper')
-            .setStyle(ButtonStyle.Secondary)
-        );
-
-        const row2 = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('apply_ia')
-            .setLabel('Apply - IA')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId('apply_dispatch')
-            .setLabel('Apply - Dispatch')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('apply_training')
-            .setLabel('Apply - Training Staff')
-            .setStyle(ButtonStyle.Secondary)
-        );
-
-        const embed = new EmbedBuilder()
-          .setTitle('SALEA Applications')
-          .setDescription(
-            'Click the appropriate button below to submit an application.\n\n' +
-            'Please be honest and detailed in your responses.'
-          )
-          .setColor(0x00aeff);
-
-        await interaction.channel.send({ embeds: [embed], components: [row, row2] });
-
-        cfg.appPanelChannelId = interaction.channel.id;
-        saveGuildConfig(cfg);
-
-        return interaction.reply({
-          content: '✅ Application panel created in this channel.',
-          ephemeral: true,
-        });
-      }
-
-      if (id === 'setup_create_ticket_panel') {
-        const guildId = interaction.guildId;
-        const cfg = getGuildConfig(guildId);
-        const features = cfg.features || getGuildFeatures(guildId);
-        if (features.tickets === false) {
-          return interaction.reply({
-            content: '❌ Tickets are currently disabled on this server.',
-            ephemeral: true,
-          });
-        }
-
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (!isGuildAdminMember(member, guildId)) {
-          return interaction.reply({
-            content: '❌ Only High Command / Admin can run the setup wizard.',
-            ephemeral: true,
-          });
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle('SALEA Tickets')
-          .setDescription(
-            'Use the following slash command to open tickets:\n' +
-              '• `/ticket open type: General subject: ...`\n' +
-              '• `/ticket open type: IA subject: ...`\n' +
-              '• `/ticket open type: Training subject: ...`\n' +
-              '• `/ticket open type: Tech subject: ...`\n\n' +
-              'Staff can close tickets with `/ticket close` inside the ticket channel.'
-          )
-          .setColor(0xfacc15);
-
-        await interaction.channel.send({ embeds: [embed] });
-
-        cfg.ticketInfoChannelId = interaction.channel.id;
-        saveGuildConfig(cfg);
-
-        return interaction.reply({
-          content: '✅ Ticket info panel posted in this channel.',
-          ephemeral: true,
-        });
-      }
-
-      // Apply buttons
-      if (id.startsWith('apply_')) {
-        const divisionKey = id.replace('apply_', '');
-        let divisionName = 'Unknown';
-        if (divisionKey === 'patrol') divisionName = 'Patrol';
-        if (divisionKey === 'cid') divisionName = 'CID';
-        if (divisionKey === 'srt') divisionName = 'SRT';
-        if (divisionKey === 'traffic') divisionName = 'Traffic Unit';
-        if (divisionKey === 'reaper') divisionName = 'Reaper';
-        if (divisionKey === 'ia') divisionName = 'IA';
-        if (divisionKey === 'dispatch') divisionName = 'Dispatch';
-        if (divisionKey === 'training') divisionName = 'Training Staff';
-
-        const modal = new ModalBuilder()
-          .setCustomId(`app_modal_${divisionKey}`)
-          .setTitle(`Apply - ${divisionName}`);
-
-        const q1 = new TextInputBuilder()
-          .setCustomId('q1_name')
-          .setLabel('Your name (in-game & Discord)')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true);
-
-        const q2 = new TextInputBuilder()
-          .setCustomId('q2_age')
-          .setLabel('Your age (OOC)')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true);
-
-        const q3 = new TextInputBuilder()
-          .setCustomId('q3_experience')
-          .setLabel('LEO / RP experience')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true);
-
-        const q4 = new TextInputBuilder()
-          .setCustomId('q4_availability')
-          .setLabel('Availability / time zone')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true);
-
-        const row1 = new ActionRowBuilder().addComponents(q1);
-        const row2 = new ActionRowBuilder().addComponents(q2);
-        const row3 = new ActionRowBuilder().addComponents(q3);
-        const row4 = new ActionRowBuilder().addComponents(q4);
-
-        modal.addComponents(row1, row2, row3, row4);
-
-        await interaction.showModal(modal);
-      }
-    }
-
-    // Modal submit for applications
-    if (interaction.isModalSubmit()) {
-      if (interaction.customId.startsWith('app_modal_')) {
-        const divisionKey = interaction.customId.replace('app_modal_', '');
-        let divisionName = 'Unknown';
-        if (divisionKey === 'patrol') divisionName = 'Patrol';
-        if (divisionKey === 'cid') divisionName = 'CID';
-        if (divisionKey === 'srt') divisionName = 'SRT';
-        if (divisionKey === 'traffic') divisionName = 'Traffic Unit';
-        if (divisionKey === 'reaper') divisionName = 'Reaper';
-        if (divisionKey === 'ia') divisionName = 'IA';
-        if (divisionKey === 'dispatch') divisionName = 'Dispatch';
-        if (divisionKey === 'training') divisionName = 'Training Staff';
-
-        const name = interaction.fields.getTextInputValue('q1_name');
-        const age = interaction.fields.getTextInputValue('q2_age');
-        const exp = interaction.fields.getTextInputValue('q3_experience');
-        const availability = interaction.fields.getTextInputValue('q4_availability');
-
-        const appRecord = addApplication({
-          id: `${interaction.user.id}-${Date.now()}`,
-          guildId: interaction.guildId,
-          userId: interaction.user.id,
-          division: divisionName,
-          answers: {
-            name,
-            age,
-            experience: exp,
-            availability,
-          },
-          status: 'pending',
-          createdAt: Date.now(),
-          decidedAt: null,
-          decidedBy: null,
-          decisionReason: null,
-        });
-
-        const cfg = getGuildConfig(interaction.guildId);
-        const applicantRoleId = cfg.applicantRoleId || cfg.roles?.applicantRoleId;
-        if (applicantRoleId) {
-          const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-          if (member && !member.roles.cache.has(applicantRoleId)) {
-            await member.roles.add(applicantRoleId).catch(() => {});
-          }
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle(`New Application - ${divisionName}`)
-          .setColor(0x00ae86)
-          .addFields(
-            {
-              name: 'Applicant',
-              value: `<@${interaction.user.id}> (${interaction.user.id})`,
-              inline: false,
-            },
-            { name: 'Name', value: name, inline: false },
-            { name: 'Age', value: age, inline: true },
-            { name: 'Experience', value: exp || 'N/A', inline: false },
-            { name: 'Availability', value: availability || 'N/A', inline: false }
-          )
-          .setFooter({ text: `Application ID: ${appRecord.id}` })
-          .setTimestamp(new Date(appRecord.createdAt));
-
-        try {
-          const logChannelId =
-            cfg.applicationsChannelId || cfg.channels?.applicationsChannelId;
-          if (logChannelId) {
-            const channel = await interaction.client.channels.fetch(logChannelId);
-            if (channel && channel.isTextBased()) {
-              const content = cfg.hrRoleId || cfg.roles?.hrRoleId
-                ? `<@&${cfg.hrRoleId || cfg.roles?.hrRoleId}> New application received.`
-                : 'New application received.';
-              await channel.send({ content, embeds: [embed] });
-            }
-          }
-        } catch (err) {
-          console.error('Error sending application log:', err);
-        }
-
-        await interaction.reply({
-          content: `✅ Your application to **${divisionName}** has been submitted. A member of HR/High Command will review it.`,
-          ephemeral: true,
-        });
-      }
-    }
-  } catch (err) {
-    console.error('Interaction handler error:', err);
-    if (interaction.isRepliable()) {
-      try {
-        await interaction.reply({
-          content: '⚠️ An error occurred while processing this interaction.',
-          ephemeral: true,
-        });
-      } catch {}
-    }
-  }
-});
-
-// ---------------------------
-// Start the bot
-// ---------------------------
-
-client.login(process.env.DISCORD_TOKEN);
-
-
-
-
+// Start Discord bot
+client.login(DISCORD_TOKEN);
