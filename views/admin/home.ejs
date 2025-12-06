@@ -486,7 +486,14 @@
       <div class="sidebar-footer">
         <div class="user-row">
           <span>Signed in as<br /><strong><%= (user && user.username) || 'Discord Admin' %></strong></span>
-          <span>Guilds attached: <code><%= (guildCount || 1) %></code></span>
+          <span>
+  Guilds attached:
+  <code>
+    <%= (typeof guildCount !== 'undefined'
+          ? guildCount
+          : (Array.isArray(guilds) ? guilds.length : 0)) %>
+  </code>
+</span>
           <span>Role-gated access via Discord OAuth.</span>
         </div>
       </div>
